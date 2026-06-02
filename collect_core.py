@@ -1,0 +1,264 @@
+"""视频骨架采集核心逻辑（CLI 与 Web 共用）。"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+import cv2
+
+from model_assets import COCO17_KEYPOINT_NAMES, RTMPOSE_VARIANTS, VIDEO_EXTENSIONS
+from rtmpose_infer import PoseBatch, RTMPosePipeline
+
+ProgressCallback = Callable[[int, int], None]
+
+
+def parse_variant(raw: str) -> str:
+    v = str(raw or "t").strip().lower()
+    if v == "ms":
+        v = "m"
+    if v not in RTMPOSE_VARIANTS:
+        raise ValueError(f"variant 必须是 {RTMPOSE_VARIANTS} 之一")
+    return v
+
+
+def validate_video_path(video: str | Path) -> Path:
+    path = Path(video)
+    if not path.is_file():
+        raise FileNotFoundError(f"视频文件不存在: {video}")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        ext_list = ", ".join(sorted(VIDEO_EXTENSIONS))
+        raise ValueError(f"不支持的文件类型: {path.suffix}，仅支持 {ext_list}")
+    return path
+
+
+def persons_from_batch(batch: PoseBatch) -> list[dict[str, Any]]:
+    persons: list[dict[str, Any]] = []
+    kpts_all = batch.keypoints
+    scores_all = batch.keypoint_scores
+    bboxes = batch.bboxes
+
+    for p_idx in range(batch.num_persons):
+        keypoints_flat: list[list[float]] = []
+        keypoints_named: list[dict[str, float | str]] = []
+        for k in range(kpts_all.shape[1]):
+            x = float(kpts_all[p_idx][k][0])
+            y = float(kpts_all[p_idx][k][1])
+            score = float(scores_all[p_idx][k])
+            keypoints_flat.append([x, y, score])
+            name = COCO17_KEYPOINT_NAMES[k] if k < len(COCO17_KEYPOINT_NAMES) else f"kpt_{k}"
+            keypoints_named.append({"name": name, "x": x, "y": y, "score": score})
+
+        bbox = None
+        if p_idx < len(bboxes):
+            bbox = [float(v) for v in bboxes[p_idx][:4]]
+
+        persons.append(
+            {
+                "person_id": p_idx,
+                "bbox": bbox,
+                "keypoints": keypoints_flat,
+                "keypoints_named": keypoints_named,
+            }
+        )
+    return persons
+
+
+def _compute_infer_resolution(source_w: int, source_h: int, target_height: int) -> tuple[int, int, bool]:
+    """与 visual-dps inference_service._compute_infer_resolution 一致：仅按目标高等比缩放（不放大）。"""
+    target_h = max(120, int(target_height))
+    if source_h <= target_h:
+        infer_w = source_w
+        infer_h = source_h
+        resize_needed = False
+    else:
+        infer_h = target_h
+        infer_w = int(round(source_w * (infer_h / float(source_h))))
+        infer_w = max(2, infer_w - (infer_w % 2))
+        infer_h = max(2, infer_h - (infer_h % 2))
+        resize_needed = True
+    return infer_w, infer_h, resize_needed
+
+
+def _read_video_source_size(video_path: Path) -> tuple[int, int]:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"无法打开视频: {video_path}")
+    try:
+        src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if src_w <= 0 or src_h <= 0:
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                src_h, src_w = frame.shape[:2]
+        if src_w <= 0 or src_h <= 0:
+            raise RuntimeError(f"无法读取视频分辨率: {video_path}")
+        return src_w, src_h
+    finally:
+        cap.release()
+
+
+def _resolve_collect_resize(video_path: Path, width: int, height: int) -> tuple[int, int] | None:
+    """解析采集推理尺寸：宽+高均指定则固定缩放；仅高则按 visual-dps 等比缩放。"""
+    if width > 0 and height > 0:
+        return width, height
+    if height > 0:
+        src_w, src_h = _read_video_source_size(video_path)
+        infer_w, infer_h, resize_needed = _compute_infer_resolution(src_w, src_h, height)
+        if resize_needed:
+            return infer_w, infer_h
+    return None
+
+
+def _throttle_frame_rate(frame_rate: float, loop_started_at: float) -> None:
+    """与 visual-dps / box_human_det 一致：限制采集推理节拍（帧/秒）。"""
+    if frame_rate <= 0:
+        return
+    frame_period_sec = 1.0 / max(1.0, float(frame_rate))
+    sleep_sec = frame_period_sec - (time.perf_counter() - loop_started_at)
+    if sleep_sec > 0:
+        time.sleep(sleep_sec)
+
+
+def collect_from_video(
+    pipeline: RTMPosePipeline,
+    video_path: Path,
+    *,
+    resize: tuple[int, int] | None = None,
+    frame_interval: int = 1,
+    frame_rate: float = 0.0,
+    max_frames: int | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"无法打开视频: {video_path}")
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if fps <= 0:
+        fps = 15.0
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    frames_out: list[dict[str, Any]] = []
+    read_idx = 0
+    saved_idx = 0
+    interval = max(1, int(frame_interval))
+
+    collect_frame_rate = max(0.0, float(frame_rate))
+
+    try:
+        while True:
+            loop_started_at = time.perf_counter()
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+            read_idx += 1
+            if interval > 1 and (read_idx - 1) % interval != 0:
+                if on_progress:
+                    on_progress(read_idx, total_frames)
+                continue
+
+            infer_w, infer_h = frame.shape[1], frame.shape[0]
+            if resize:
+                infer_w, infer_h = resize
+                frame = cv2.resize(frame, resize, interpolation=cv2.INTER_AREA)
+
+            batch = pipeline.infer(frame)
+            _throttle_frame_rate(collect_frame_rate, loop_started_at)
+            saved_idx += 1
+            ts = (read_idx - 1) / fps
+            frames_out.append(
+                {
+                    "frame_idx": saved_idx,
+                    "source_frame_idx": read_idx,
+                    "timestamp_sec": round(ts, 6),
+                    "infer_width": infer_w,
+                    "infer_height": infer_h,
+                    "persons": persons_from_batch(batch),
+                }
+            )
+            if on_progress:
+                on_progress(read_idx, total_frames)
+            if max_frames is not None and saved_idx >= max_frames:
+                break
+    finally:
+        cap.release()
+
+    return {
+        "schema": 1,
+        "kind": "pose_collect_video",
+        "model": f"rtmpose_{pipeline.variant}",
+        "det_model": f"rtmdet_{pipeline.det_variant}",
+        "source": str(video_path.resolve()),
+        "source_video": video_path.name,
+        "source_video_stem": video_path.stem,
+        "source_type": "video",
+        "keypoint_format": "coco17",
+        "keypoint_names": list(COCO17_KEYPOINT_NAMES),
+        "fps": fps,
+        "total_frames": total_frames,
+        "frame_interval": interval,
+        "collect_frame_rate": collect_frame_rate,
+        "frame_count": len(frames_out),
+        "frames": frames_out,
+    }
+
+
+def write_json(data: dict[str, Any], output_path: str | Path) -> Path:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return out.resolve()
+
+
+def run_collect_job(
+    *,
+    video_path: Path,
+    output_path: Path,
+    models_dir: str,
+    variant: str,
+    det_variant: str = "t",
+    device: str,
+    ort_backend: str,
+    width: int,
+    height: int,
+    frame_interval: int,
+    frame_rate: float = 0.0,
+    max_frames: int | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    video_path = validate_video_path(video_path)
+    resize = _resolve_collect_resize(video_path, width, height)
+    if resize:
+        print(f"ℹ️ 推理缩放: {resize[0]}x{resize[1]}（height={height}，与 visual-dps 等比逻辑）")
+    elif height > 0:
+        src_w, src_h = _read_video_source_size(video_path)
+        print(f"ℹ️ 推理缩放: 关闭（源 {src_w}x{src_h} 不高于目标高 {height}）")
+    else:
+        print("ℹ️ 推理缩放: 关闭（未指定 inference.height）")
+
+    pipeline = RTMPosePipeline(
+        variant=parse_variant(variant),
+        det_variant=det_variant,
+        models_dir=models_dir,
+        device=device,
+        backend=ort_backend,
+    )
+
+    t0 = time.perf_counter()
+    data = collect_from_video(
+        pipeline,
+        video_path,
+        resize=resize,
+        frame_interval=frame_interval,
+        frame_rate=frame_rate,
+        max_frames=max_frames,
+        on_progress=on_progress,
+    )
+    data["collected_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    data["elapsed_sec"] = round(time.perf_counter() - t0, 3)
+    write_json(data, output_path)
+    return data

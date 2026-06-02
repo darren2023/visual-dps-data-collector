@@ -1,0 +1,38 @@
+{
+    "paths": {
+        "base_localdata_dir": "localdata",
+        "json_dir": "localdata/json",
+        "video_dir": "localdata/video",
+        "upload_dir": "localdata/upload",
+        "models_onnx_dir": "localdata/models/onnx"
+    },
+    "storage": {
+        "save_video": true
+    },
+    "video": {
+        "transcode_height": 480,
+        "capture_height": 480
+    },
+    "models": {
+        "backend": "rtmpose_t",
+        "det_variant": "m",
+        "use_gpu": true,
+        "rtmpose_onnx_device": "cpu",
+        "rtmpose_onnx_device_gpu": "cuda",
+        "rtmpose_onnx_ort_backend": "onnxruntime"
+    },
+    "inference": {
+        "frame_rate": 0,
+        "height": 480,
+        "pose_frame_interval": 1,
+        "max_pose_frames": 0
+    },
+    "source": {
+        "enabled": false,
+        "video": ""
+    },
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8765
+    }
+}

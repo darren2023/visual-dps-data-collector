@@ -1,0 +1,87 @@
+# visual-dps-datacollect
+
+从**本地视频**采集人体骨架坐标，输出 JSON；配置命名与 [visual-dps](../visual-dps) 的 `app_config.json` 对齐。
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+## Web 前端
+
+```bash
+python server.py
+```
+
+浏览器：**http://127.0.0.1:8765**
+
+| 页签 | 功能 |
+|------|------|
+| **采集** | 上传视频 → 推理 → **仅保存 JSON** 到 `localdata/json/`，原视频处理完即删 |
+| **回放** | 导入 JSON；需叠加画面时再上传视频（临时文件，离开回放页/暂停/播完会删除） |
+
+## 配置（`config.json`，对齐 visual-dps）
+
+| 节点 | 字段 | 说明 |
+|------|------|------|
+| `paths` | `json_dir` | 骨架 JSON 默认目录（`localdata/json`） |
+| `paths` | `video_dir` | 配套视频目录（`localdata/video`） |
+| `paths` | `upload_dir` | 采集时临时视频目录（不长期保留） |
+| `paths` | `models_onnx_dir` | ONNX 权重根目录（见下方目录结构） |
+| `models` | `backend` | `rtmpose_t` / `rtmpose_s` / `rtmpose_m`（姿态档） |
+| `models` | `det_variant` | 检测档 `t`（nano 320）/ `m`（640）；`s`/`l` 无官方 ONNX 时自动回退 |
+| `models` | `rtmpose_onnx_device` | CPU 设备名 |
+| `models` | `use_gpu` | 默认 `true`，使用 `rtmpose_onnx_device_gpu` |
+| `models` | `rtmpose_onnx_device_gpu` | GPU 设备名（`cuda`） |
+| `inference` | `height` | 默认推理高度 |
+| `inference` | `frame_rate` | 采集推理节拍（帧/秒），**默认 0**=全速；如 `15` 则限速到约 15 次推理/秒 |
+| `inference` | `pose_frame_interval` | 抽帧间隔 |
+| `inference` | `max_pose_frames` | 最多采集帧数，0 不限制 |
+| `source` | `video` | CLI 默认视频路径 |
+| `server` | `host` / `port` | Web 服务 |
+
+GPU：默认开启（`models.use_gpu: true` + `onnxruntime-gpu`）。启动日志应出现 `推理设备: cuda` 与 `ORT 实际 EP: CUDAExecutionProvider`。强制 CPU 可设 `"use_gpu": false` 或 `set INFERENCE_USE_GPU=0`。
+
+## ONNX 模型目录
+
+默认根目录：`localdata/models/onnx`（`config.json` → `paths.models_onnx_dir`）
+
+```
+localdata/models/onnx/
+  detection/          # 人体检测（RTMDet）
+    rtmdet_nano/end2end.onnx   # det_variant=t，320×320
+    rtmdet_m/end2end.onnx      # det_variant=m，640×640
+  pose/               # 姿态估计（RTMPose）
+    rtmpose_t/end2end.onnx     # backend=rtmpose_t
+    rtmpose_s/end2end.onnx
+    rtmpose_m/end2end.onnx
+```
+
+与 visual-dps 旧布局 `localdata/models/rtmpose_onnx/{模型名}/` 仍兼容：若新路径不存在会自动回退读取。
+
+**预下载（推荐）**：
+
+```bash
+# 可选：复制 .env.example 并设置 OPENMMLAB_MIRROR_BASE 加速
+python scripts/download_onnx_models.py
+python scripts/download_onnx_models.py --det t,m --pose t
+```
+
+复用 visual-dps 已有权重时：
+
+```bash
+python collect_pose.py --video test.mp4 --models-dir ../visual-dps/localdata/models/rtmpose_onnx
+```
+
+## 命令行
+
+```bash
+python collect_pose.py --video test.mp4 --backend rtmpose_t
+```
+
+未指定 `-o` 时写入 `paths.json_dir/{视频主名}_{backend}.json`（如 `test.mp4` → `test_rtmpose_t.json`）。
+
+## JSON 格式
+
+`frames[].persons[].keypoints`：`[[x, y, score], ...]` × 17（COCO-17）。

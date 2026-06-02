@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>骨架采集与回放</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>人体骨架 · 采集与回放</h1>
+    <p class="sub">上传视频采集 → JSON 与配套视频默认存入 localdata · 回放自动加载关联视频</p>
+  </header>
+
+  <nav class="tabs">
+    <button type="button" class="tab active" data-tab="collect">采集</button>
+    <button type="button" class="tab" data-tab="playback">回放</button>
+  </nav>
+
+  <main>
+    <section id="panel-collect" class="panel active">
+      <form id="collect-form" class="card">
+        <label>视频文件<input type="file" id="collect-file" accept="video/*" required /></label>
+        <div class="row">
+          <label>姿态（models.backend）
+            <select id="collect-backend">
+              <option value="rtmpose_t">rtmpose_t</option>
+              <option value="rtmpose_s">rtmpose_s</option>
+              <option value="rtmpose_m">rtmpose_m</option>
+            </select>
+          </label>
+          <label>检测（models.det_variant）
+            <select id="collect-det">
+              <option value="t">rtmdet_t · nano 320</option>
+              <option value="m" selected>rtmdet_m · 640（推荐仓库场景）</option>
+              <option value="s">rtmdet_s · 回退 nano</option>
+              <option value="l">rtmdet_l · 回退 m</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint field-hint">检测档 <strong>m</strong> 与 box_human_det 同级（RTMDet-m 640）；官方 ONNX 仅提供 t/m，s/l 自动回退。</p>
+        <div class="row">
+          <label>推理宽<input type="number" id="collect-width" value="0" min="0" title="0=按高度等比自动计算（与 visual-dps 一致）" /></label>
+          <label>推理高（inference.height）<input type="number" id="collect-height" value="480" min="0" title="0=不缩放；仅填高时按源视频等比缩放宽" /></label>
+        </div>
+        <p class="hint field-hint">与 visual-dps 一致：只填<strong>推理高</strong>（如 480）时，宽按源视频比例自动计算且不放大；宽、高都填才强制固定尺寸。</p>
+        <div class="field-block">
+          <label for="collect-fps">frame_rate（inference.frame_rate）</label>
+          <input type="number" id="collect-fps" value="0" min="0" step="1" />
+          <p class="hint field-hint">
+            采集时<strong>每秒最多推理多少帧</strong>（推理+写入 JSON 的节拍上限，不是视频本身 FPS）。
+            <strong>默认 0</strong>：不额外等待，尽快处理完视频（适合离线全量导出）。
+            设为 <strong>15</strong> 时：每帧推理后若不足约 1/15 秒会 sleep，整体更接近实时预览负载（与 visual-dps / box_human_det 一致）。
+          </p>
+        </div>
+        <div class="row">
+          <label>pose_frame_interval<input type="number" id="collect-interval" value="1" min="1" title="每隔 N 帧推理一次" /></label>
+          <label>max_pose_frames<input type="number" id="collect-max" value="0" min="0" title="0=不限制" /></label>
+        </div>
+        <label class="toggle-row">
+          <input type="checkbox" id="collect-save-video" checked />
+          <span>保存配套视频至 <code>localdata/video</code>（默认开启，与 JSON 同记录关联）</span>
+        </label>
+        <button type="submit" id="collect-btn">开始采集</button>
+      </form>
+      <div id="collect-status" class="status hidden"></div>
+      <div id="collect-result" class="card hidden"></div>
+
+      <h2>历史记录（JSON + 视频）</h2>
+      <ul id="session-list" class="session-list"></ul>
+    </section>
+
+    <section id="panel-playback" class="panel">
+      <div class="card">
+        <label>骨架 JSON<input type="file" id="playback-json" accept=".json,application/json" /></label>
+        <label>替换视频（可选，仅当记录无已保存视频或需本地替换时）<input type="file" id="playback-video" accept="video/*" /></label>
+        <p class="hint">从历史记录回放时会自动加载已保存的配套视频；手动导入 JSON 时可在此选择视频。</p>
+      </div>
+
+      <div class="stage-wrap">
+        <video id="playback-video-el" playsinline controls preload="metadata"></video>
+        <canvas id="playback-canvas"></canvas>
+      </div>
+      <div class="controls">
+        <button type="button" id="play-btn">播放</button>
+        <button type="button" id="pause-btn">暂停</button>
+        <button type="button" id="end-playback-btn">停止回放</button>
+        <input type="range" id="seek-bar" min="0" max="1000" value="0" />
+        <span id="time-label">0:00</span>
+      </div>
+      <p id="playback-info" class="hint"></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

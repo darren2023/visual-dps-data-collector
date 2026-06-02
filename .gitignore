@@ -1,0 +1,79 @@
+# --- Python ---
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+
+# --- 本地数据（运行时生成，不入库）---
+# 采集产物：骨架 JSON 与 sidecar
+localdata/json/*
+!localdata/json/.gitkeep
+
+# 配套视频（体积大）
+localdata/video/*
+!localdata/video/.gitkeep
+
+# 上传临时目录（含 tmp_*、回放临时）
+localdata/upload/*
+!localdata/upload/.gitkeep
+localdata/upload/playback_temp/*
+!localdata/upload/playback_temp/.gitkeep
+
+# ONNX 权重（OpenMMLab 下载，体积大）
+localdata/models/onnx/detection/*
+!localdata/models/onnx/detection/.gitkeep
+localdata/models/onnx/pose/*
+!localdata/models/onnx/pose/.gitkeep
+# 旧版扁平目录（若仍保留本地权重）
+localdata/models/rtmpose_onnx/
+
+# 旧版/杂项会话数据
+localdata/sessions/
+
+# CLI 默认输出目录
+output/
+
+# --- 媒体与压缩包 ---
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.m4v
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# --- IDE / 系统 ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- 本机覆盖配置（可选，若后续增加 config.local.json）---
+config.local.json
+config.*.local.json
