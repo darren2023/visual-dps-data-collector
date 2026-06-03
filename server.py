@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from annotation_store import (
@@ -43,6 +43,19 @@ from config_loader import (
     variant_to_backend,
 )
 from model_assets import VIDEO_EXTENSIONS
+from export_pose_xlsx import export_pose_to_xlsx_bytes
+from pose_store import (
+    STORAGE_V2_PARQUET,
+    locate_record,
+    iter_active_records,
+    load_frames_range,
+    load_pose_document,
+    load_pose_header,
+    load_timeline,
+    meta_sidecar_path,
+    migrate_v1_json_dir,
+    record_id_from_path,
+)
 from video_frame import first_frame_base64
 
 app = FastAPI(title="visual-dps-datacollect", version="0.2.0")
@@ -74,41 +87,54 @@ def _update_job(job_id: str, **fields: Any) -> None:
             _jobs[job_id].update(fields)
 
 
-def _json_path_for_record(record_id: str) -> Path | None:
+def _json_archive_dir() -> Path:
+    return resolve_app_paths().json_dir / "archive"
+
+
+def _locate_record(record_id: str, *, include_archive: bool = True):
     paths = resolve_app_paths()
-    rid = str(record_id or "").strip()
-    if not rid:
-        return None
-    direct = paths.json_dir / f"{rid}.json"
-    if direct.is_file() and not direct.name.endswith(".meta.json"):
-        return direct
-    for p in paths.json_dir.glob("*.json"):
-        if p.name.endswith(".meta.json"):
-            continue
-        if p.stem == rid or p.stem.startswith(rid + "_"):
-            return p
-    return None
+    return locate_record(paths.json_dir, record_id, include_archive=include_archive)
 
 
 def _record_id_from_pose_path(pose_path: Path) -> str:
-    return pose_path.stem
+    return record_id_from_path(pose_path)
 
 
-def _resolve_video_stem_for_pose(pose_path: Path, meta: dict | None = None) -> str:
+def _meta_path_for_record(record_id: str, locator=None) -> Path:
+    paths = resolve_app_paths()
+    sidecar = meta_sidecar_path(paths.json_dir, record_id)
+    if sidecar.is_file():
+        return sidecar
+    if locator is not None:
+        if locator.storage == STORAGE_V2_PARQUET:
+            legacy = locator.path / "meta.json"
+            if legacy.is_file():
+                return legacy
+        elif locator.path.is_file():
+            legacy = locator.path.with_suffix(".meta.json")
+            if legacy.is_file():
+                return legacy
+    return sidecar
+
+
+def _resolve_video_stem_for_record(record_id: str, locator=None, meta: dict | None = None) -> str:
     if meta:
         vs = str(meta.get("video_stem") or "").strip()
         if vs:
             return vs
-    sidecar = pose_path.with_suffix(".meta.json")
-    if sidecar.is_file():
-        try:
-            m = json.loads(sidecar.read_text(encoding="utf-8"))
-            vs = str(m.get("video_stem") or "").strip()
-            if vs:
-                return vs
-        except json.JSONDecodeError:
-            pass
-    return pose_path.stem
+        src = str(meta.get("source_video") or "").strip()
+        if src:
+            return sanitize_file_stem(Path(src).stem)
+    if locator is None:
+        locator = _locate_record(record_id)
+    if locator:
+        return resolve_video_stem_from_record(
+            record_id,
+            json_dir=resolve_app_paths().json_dir,
+            pose_path=locator.path,
+            meta=meta,
+        )
+    return sanitize_file_stem(record_id)
 
 
 def _annotation_path_for_video_stem(video_stem: str) -> Path:
@@ -164,11 +190,11 @@ def _parse_save_video_flag(raw: Any, *, default: bool) -> bool:
 
 
 def _video_path_for_record(record_id: str) -> Path | None:
-    pose_path = _json_path_for_record(record_id)
-    if not pose_path:
+    locator = _locate_record(record_id)
+    if not locator:
         return None
     paths = resolve_app_paths()
-    sidecar = pose_path.with_suffix(".meta.json")
+    sidecar = _meta_path_for_record(record_id, locator)
     if sidecar.is_file():
         try:
             meta = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -179,8 +205,9 @@ def _video_path_for_record(record_id: str) -> Path | None:
                     return candidate
         except json.JSONDecodeError:
             pass
+    stem = locator.record_id
     for ext in VIDEO_EXTENSIONS:
-        candidate = paths.video_dir / f"{pose_path.stem}{ext}"
+        candidate = paths.video_dir / f"{stem}{ext}"
         if candidate.is_file():
             return candidate
     return None
@@ -269,9 +296,10 @@ def _run_job(
         meta = {
             "record_id": record_id,
             "job_id": job_id,
-            "display_name": video_stem or _display_name_from_pose_file(pose_path.name, backend),
+            "display_name": video_stem or _display_name_from_pose_file(record_id, backend),
             "video_stem": video_stem,
-            "pose_file": pose_path.name,
+            "storage": data.get("storage") or STORAGE_V2_PARQUET,
+            "pose_file": f"{record_id}/manifest.json",
             "source_video": source_video_name,
             "backend": backend,
             "variant": variant,
@@ -301,7 +329,8 @@ def _run_job(
         else:
             meta["has_video"] = False
 
-        sidecar = pose_path.with_suffix(".meta.json")
+        paths = resolve_app_paths()
+        sidecar = meta_sidecar_path(paths.json_dir, record_id)
         with open(sidecar, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         _update_job(
@@ -310,14 +339,17 @@ def _run_job(
             progress=100,
             message="完成",
             frame_count=data.get("frame_count", 0),
-            pose_url=f"/api/records/{record_id}/pose.json",
+            pose_url=f"/api/records/{record_id}/manifest.json",
+            manifest_url=f"/api/records/{record_id}/manifest.json",
+            frames_url=f"/api/records/{record_id}/frames",
             record_id=record_id,
-            pose_file=pose_path.name,
+            pose_file=f"{record_id}/manifest.json",
             display_name=meta["display_name"],
             has_video=meta.get("has_video", False),
             has_annotation=meta.get("has_annotation", False),
             collision_enabled=meta.get("collision_enabled", False),
             video_url=meta.get("video_url"),
+            storage=meta.get("storage") or STORAGE_V2_PARQUET,
         )
     except Exception as exc:
         _update_job(job_id, status="error", message=str(exc))
@@ -337,52 +369,84 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _record_meta_for_list(locator) -> dict[str, Any]:
+    paths = resolve_app_paths()
+    record_id = locator.record_id
+    meta: dict[str, Any] = {
+        "record_id": record_id,
+        "storage": locator.storage,
+        "pose_url": f"/api/records/{record_id}/manifest.json",
+        "manifest_url": f"/api/records/{record_id}/manifest.json",
+        "frames_url": f"/api/records/{record_id}/frames",
+    }
+    if locator.storage == STORAGE_V2_PARQUET:
+        meta["pose_file"] = f"{record_id}/manifest.json"
+        meta["pose_label"] = record_id
+    else:
+        meta["pose_file"] = locator.path.name
+        meta["pose_label"] = locator.path.name
+
+    sidecar = _meta_path_for_record(record_id, locator)
+    if sidecar.is_file():
+        try:
+            meta.update(json.loads(sidecar.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            pass
+
+    try:
+        header = load_pose_header(locator)
+        for key in (
+            "schema",
+            "frame_count",
+            "backend",
+            "variant",
+            "det_backend",
+            "det_variant",
+            "model",
+            "det_model",
+            "fps",
+            "collision",
+            "annotation",
+            "infer_width",
+            "infer_height",
+        ):
+            if key not in meta and key in header:
+                meta[key] = header[key]
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+
+    if "backend" not in meta and "variant" in meta:
+        meta["backend"] = variant_to_backend(str(meta["variant"]))
+    if not meta.get("display_name"):
+        meta["display_name"] = _display_name_from_pose_file(
+            meta.get("pose_label") or record_id, str(meta.get("backend") or "")
+        )
+    video_stem = resolve_video_stem_from_record(
+        record_id,
+        json_dir=paths.json_dir,
+        pose_path=locator.path,
+        meta=meta,
+    )
+    meta["video_stem"] = video_stem
+    stored_ann = load_annotation_json(video_stem, annotation_dir=paths.annotation_dir)
+    meta["has_stored_annotation"] = stored_ann is not None
+    if stored_ann and not meta.get("has_annotation"):
+        meta["has_annotation"] = True
+    vpath = _video_path_for_record(record_id)
+    meta["has_video"] = bool(vpath and vpath.is_file())
+    if meta["has_video"]:
+        meta["video_file"] = vpath.name
+        meta["video_url"] = f"/api/records/{record_id}/video"
+    else:
+        meta.pop("video_url", None)
+    return meta
+
+
 @app.get("/api/records")
 def list_records() -> list[dict[str, Any]]:
     paths = resolve_app_paths()
     paths.json_dir.mkdir(parents=True, exist_ok=True)
-    items: list[dict[str, Any]] = []
-    for pose_file in sorted(paths.json_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if pose_file.name.endswith(".meta.json"):
-            continue
-        record_id = pose_file.stem
-        meta: dict[str, Any] = {
-            "record_id": record_id,
-            "pose_file": pose_file.name,
-            "pose_url": f"/api/records/{record_id}/pose.json",
-        }
-        sidecar = pose_file.with_suffix(".meta.json")
-        if sidecar.is_file():
-            try:
-                meta.update(json.loads(sidecar.read_text(encoding="utf-8")))
-            except json.JSONDecodeError:
-                pass
-        if "backend" not in meta and "variant" in meta:
-            meta["backend"] = variant_to_backend(str(meta["variant"]))
-        if not meta.get("display_name"):
-            meta["display_name"] = _display_name_from_pose_file(
-                pose_file.name, str(meta.get("backend") or "")
-            )
-        video_stem = resolve_video_stem_from_record(
-            record_id,
-            json_dir=paths.json_dir,
-            pose_path=pose_file,
-            meta=meta,
-        )
-        meta["video_stem"] = video_stem
-        stored_ann = load_annotation_json(video_stem, annotation_dir=paths.annotation_dir)
-        meta["has_stored_annotation"] = stored_ann is not None
-        if stored_ann and not meta.get("has_annotation"):
-            meta["has_annotation"] = True
-        meta["pose_label"] = pose_file.name
-        vpath = _video_path_for_record(record_id)
-        meta["has_video"] = bool(vpath and vpath.is_file())
-        if meta["has_video"]:
-            meta["video_file"] = vpath.name
-            meta["video_url"] = f"/api/records/{record_id}/video"
-        else:
-            meta.pop("video_url", None)
-        items.append(meta)
+    items = [_record_meta_for_list(loc) for loc in iter_active_records(paths.json_dir)]
     return items[:50]
 
 
@@ -397,11 +461,11 @@ def get_record_video(record_id: str) -> FileResponse:
 
 @app.get("/api/records/{record_id}/annotation.json")
 def get_record_annotation(record_id: str) -> FileResponse:
-    pose_path = _json_path_for_record(record_id)
-    if not pose_path:
+    locator = _locate_record(record_id)
+    if not locator:
         raise HTTPException(404, "记录不存在")
     paths = resolve_app_paths()
-    sidecar = pose_path.with_suffix(".meta.json")
+    sidecar = _meta_path_for_record(record_id, locator)
     meta: dict[str, Any] | None = None
     if sidecar.is_file():
         try:
@@ -411,12 +475,12 @@ def get_record_annotation(record_id: str) -> FileResponse:
     video_stem = resolve_video_stem_from_record(
         record_id,
         json_dir=paths.json_dir,
-        pose_path=pose_path,
+        pose_path=locator.path,
         meta=meta,
     )
     ann_path = annotation_path_for_video_stem(video_stem, annotation_dir=paths.annotation_dir)
     if not ann_path.is_file():
-        legacy = pose_path.with_name(f"{pose_path.stem}_annotation.json")
+        legacy = paths.json_dir / f"{record_id}_annotation.json"
         if legacy.is_file():
             ann_path = legacy
         else:
@@ -453,37 +517,19 @@ def list_annotate_options() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen_stems: set[str] = set()
 
-    for pose_file in sorted(paths.json_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if pose_file.name.endswith(".meta.json"):
-            continue
-        record_id = pose_file.stem
-        meta: dict[str, Any] = {"record_id": record_id, "pose_file": pose_file.name}
-        sidecar = pose_file.with_suffix(".meta.json")
-        if sidecar.is_file():
-            try:
-                meta.update(json.loads(sidecar.read_text(encoding="utf-8")))
-            except json.JSONDecodeError:
-                pass
-        if not meta.get("display_name"):
-            meta["display_name"] = _display_name_from_pose_file(pose_file.name, str(meta.get("backend") or ""))
-        video_stem = resolve_video_stem_from_record(
-            record_id,
-            json_dir=paths.json_dir,
-            pose_path=pose_file,
-            meta=meta,
-        )
+    for locator in iter_active_records(paths.json_dir):
+        meta = _record_meta_for_list(locator)
+        record_id = locator.record_id
+        video_stem = meta.get("video_stem") or record_id
         seen_stems.add(video_stem)
-        vpath = _video_path_for_record(record_id)
-        has_video = bool(vpath and vpath.is_file())
-        has_ann = load_annotation_json(video_stem, annotation_dir=paths.annotation_dir) is not None
         items.append({
             "video_stem": video_stem,
             "display_name": meta.get("display_name") or video_stem,
             "record_id": record_id,
-            "pose_file": pose_file.name,
+            "pose_file": meta.get("pose_file") or record_id,
             "source_video": meta.get("source_video") or "",
-            "has_video": has_video,
-            "has_stored_annotation": has_ann,
+            "has_video": bool(meta.get("has_video")),
+            "has_stored_annotation": bool(meta.get("has_stored_annotation")),
         })
 
     for ann_path in sorted(paths.annotation_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -585,12 +631,137 @@ async def validate_annotation(file: UploadFile = File(...)) -> dict[str, Any]:
     }
 
 
+def _annotation_path_for_record(record_id: str, locator=None) -> Path | None:
+    """解析记录关联的标注 JSON 路径（annotations 目录或 legacy 旁路文件）。"""
+    if locator is None:
+        locator = _locate_record(record_id)
+    if not locator:
+        return None
+    paths = resolve_app_paths()
+    sidecar = _meta_path_for_record(record_id, locator)
+    meta: dict[str, Any] | None = None
+    if sidecar.is_file():
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = None
+    video_stem = resolve_video_stem_from_record(
+        record_id,
+        json_dir=paths.json_dir,
+        pose_path=locator.path,
+        meta=meta,
+    )
+    ann_path = annotation_path_for_video_stem(video_stem, annotation_dir=paths.annotation_dir)
+    if ann_path.is_file():
+        return ann_path
+    legacy = paths.json_dir / f"{record_id}_annotation.json"
+    if legacy.is_file():
+        return legacy
+    return None
+
+
+@app.get("/api/records/{record_id}/export.xlsx")
+def export_record_xlsx(record_id: str) -> Response:
+    """导出 COCO-17 骨架至 xlsx；碰撞/告警写入单独事件表。"""
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    try:
+        pose_data = load_pose_document(locator, include_frames=True)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    settings = build_settings(config_path=resolve_config_path(None), cli={})
+    ann_path = _annotation_path_for_record(record_id, locator=locator)
+    try:
+        blob = export_pose_to_xlsx_bytes(
+            pose_data,
+            annotation_path=ann_path,
+            alarm_min_consecutive_frames=settings.alarm_min_consecutive_frames,
+            alarm_cooldown_frames=settings.alarm_cooldown_frames,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    filename = f"{record_id}_skeleton.xlsx"
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/records/{record_id}/timeline")
+def get_record_timeline(record_id: str) -> JSONResponse:
+    """轻量时间轴（frame_idx / timestamp），供回放索引。"""
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    try:
+        timeline = load_timeline(locator)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return JSONResponse({"record_id": record_id, "count": len(timeline), "timeline": timeline})
+
+
+@app.get("/api/records/{record_id}/manifest.json")
+def get_record_manifest(record_id: str) -> JSONResponse:
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    try:
+        header = load_pose_header(locator)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    header.setdefault("record_id", record_id)
+    header.setdefault("frames_url", f"/api/records/{record_id}/frames")
+    return JSONResponse(header)
+
+
+@app.get("/api/records/{record_id}/frames")
+def get_record_frames(
+    record_id: str,
+    from_frame: int = 1,
+    to_frame: int | None = None,
+) -> JSONResponse:
+    """按帧段返回骨架与事件（schema v2 分页加载）。"""
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    lo = max(1, int(from_frame))
+    hi = int(to_frame) if to_frame is not None else lo + 119
+    if hi < lo:
+        hi = lo
+    try:
+        frames = load_frames_range(locator, from_frame_idx=lo, to_frame_idx=hi)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return JSONResponse(
+        {
+            "record_id": record_id,
+            "from_frame": lo,
+            "to_frame": hi,
+            "count": len(frames),
+            "frames": frames,
+        }
+    )
+
+
 @app.get("/api/records/{record_id}/pose.json")
-def get_record_pose(record_id: str) -> FileResponse:
-    path = _json_path_for_record(record_id)
-    if not path or not path.is_file():
-        raise HTTPException(404, "pose JSON 不存在")
-    return FileResponse(path, media_type="application/json")
+def get_record_pose(record_id: str) -> JSONResponse:
+    """兼容旧客户端：v1 返回 FileResponse；v2 返回 manifest（不含 frames）。"""
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    if locator.storage != STORAGE_V2_PARQUET and locator.path.is_file():
+        return FileResponse(locator.path, media_type="application/json")
+    try:
+        header = load_pose_header(locator)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    header.setdefault("record_id", record_id)
+    header.setdefault("frames_url", f"/api/records/{record_id}/frames")
+    return JSONResponse(header)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -598,7 +769,9 @@ def get_job(job_id: str) -> dict[str, Any]:
     job = dict(_get_job(job_id))
     if job.get("status") == "done":
         rid = job.get("record_id") or job_id
-        job.setdefault("pose_url", f"/api/records/{rid}/pose.json")
+        job.setdefault("pose_url", f"/api/records/{rid}/manifest.json")
+        job.setdefault("manifest_url", f"/api/records/{rid}/manifest.json")
+        job.setdefault("frames_url", f"/api/records/{rid}/frames")
     return job
 
 
@@ -812,6 +985,9 @@ def main() -> None:
     paths = resolve_app_paths(cfg)
     for p in (paths.json_dir, paths.video_dir, paths.upload_dir, paths.playback_temp_dir, paths.annotation_dir):
         p.mkdir(parents=True, exist_ok=True)
+    migrated = migrate_v1_json_dir(paths.json_dir)
+    if migrated:
+        print(f"📦 已迁移 {len(migrated)} 条 v1 JSON → Parquet 包")
     settings = build_settings(config_path=resolve_config_path(None), cli={})
     print(f"🌐 Web UI: http://{host}:{port}")
     print(f"📁 JSON 目录: {paths.json_dir}")

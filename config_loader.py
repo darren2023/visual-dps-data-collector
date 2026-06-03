@@ -209,11 +209,12 @@ def default_save_video(cfg: dict[str, Any] | None = None) -> bool:
     return _pick_bool(None, storage.get("save_video"), True)
 
 
-def record_video_path(paths: AppPaths, pose_json_path: Path, suffix: str) -> Path:
-    """与 pose JSON 同 stem 的配套视频路径。"""
+def record_video_path(paths: AppPaths, pose_record_path: Path, suffix: str) -> Path:
+    """与 pose 记录同名的配套视频路径（支持目录或 .json 路径）。"""
     ext = suffix if suffix.startswith(".") else f".{suffix}"
     paths.video_dir.mkdir(parents=True, exist_ok=True)
-    return paths.video_dir / f"{pose_json_path.stem}{ext}"
+    stem = pose_record_path.stem if pose_record_path.is_file() else pose_record_path.name
+    return paths.video_dir / f"{stem}{ext}"
 
 
 @dataclass
@@ -247,6 +248,24 @@ def sanitize_file_stem(name: str) -> str:
     return safe.strip("._") or "video"
 
 
+def default_pose_record_path(
+    paths: AppPaths,
+    *,
+    backend: str,
+    video_stem: str | None = None,
+    job_id: str | None = None,
+) -> Path:
+    """记录目录命名：{视频主名}_{backend}/（schema v2 Parquet 包）。"""
+    paths.json_dir.mkdir(parents=True, exist_ok=True)
+    prefix = sanitize_file_stem(video_stem) if video_stem else "video"
+    safe_backend = re.sub(r"[^\w.-]", "_", backend)
+    candidate = paths.json_dir / f"{prefix}_{safe_backend}"
+    if candidate.is_dir() or candidate.with_suffix(".json").is_file():
+        suffix = (job_id or time.strftime("%H%M%S"))[:12]
+        candidate = paths.json_dir / f"{prefix}_{safe_backend}_{suffix}"
+    return candidate
+
+
 def default_pose_json_path(
     paths: AppPaths,
     *,
@@ -254,15 +273,13 @@ def default_pose_json_path(
     video_stem: str | None = None,
     job_id: str | None = None,
 ) -> Path:
-    """JSON 命名：{视频主名}_{backend}.json，前缀与上传视频文件名一致。"""
-    paths.json_dir.mkdir(parents=True, exist_ok=True)
-    prefix = sanitize_file_stem(video_stem) if video_stem else "video"
-    safe_backend = re.sub(r"[^\w.-]", "_", backend)
-    candidate = paths.json_dir / f"{prefix}_{safe_backend}.json"
-    if candidate.is_file():
-        suffix = (job_id or time.strftime("%H%M%S"))[:12]
-        candidate = paths.json_dir / f"{prefix}_{safe_backend}_{suffix}.json"
-    return candidate
+    """兼容旧名：新采集默认返回 Parquet 包目录。"""
+    return default_pose_record_path(
+        paths,
+        backend=backend,
+        video_stem=video_stem,
+        job_id=job_id,
+    )
 
 
 def build_settings(*, config_path: Path, cli: dict[str, Any]) -> CollectSettings:

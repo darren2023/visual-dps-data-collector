@@ -19,6 +19,7 @@ from config_loader import (
     resolve_app_paths,
     resolve_config_path,
 )
+from pose_store import meta_sidecar_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -149,16 +150,19 @@ def main(argv: list[str] | None = None) -> int:
     if annotation_path:
         ann_src = Path(annotation_path)
         if ann_src.is_file():
-            shutil.copy2(ann_src, pose_path.with_name(f"{pose_path.stem}_annotation.json"))
+            rid = pose_path.name if pose_path.is_dir() else pose_path.stem
+            ann_dest = pose_path.parent / f"{rid}_annotation.json" if pose_path.is_dir() else pose_path.with_name(f"{pose_path.stem}_annotation.json")
+            shutil.copy2(ann_src, ann_dest)
     if settings.save_video:
         paths = resolve_app_paths(load_config_file(resolve_config_path(args.config)))
         dest = record_video_path(paths, pose_path, video_path.suffix)
         shutil.copy2(video_path, dest)
-        sidecar = pose_path.with_suffix(".meta.json")
-        record_id = pose_path.stem
+        record_id = pose_path.name if pose_path.is_dir() else pose_path.stem
+        sidecar = meta_sidecar_path(paths.json_dir, record_id)
         meta = {
             "record_id": record_id,
-            "pose_file": pose_path.name,
+            "storage": data.get("storage") or "v2_parquet",
+            "pose_file": f"{record_id}/manifest.json",
             "video_file": dest.name,
             "video_url": f"/api/records/{record_id}/video",
             "has_video": True,

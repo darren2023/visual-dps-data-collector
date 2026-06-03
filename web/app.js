@@ -13,6 +13,9 @@ let poseData = null;
 let annotationBoxes = [];
 let annotationSize = null;
 let frameByTime = [];
+let frameCache = new Map();
+let currentRecordId = null;
+const FRAME_CHUNK_SIZE = 120;
 let rafId = null;
 let playbackId = null;
 let playbackVideoObjectUrl = null;
@@ -50,11 +53,49 @@ function getVideoFrameSize() {
   const vw = videoEl.videoWidth;
   const vh = videoEl.videoHeight;
   if (vw > 0 && vh > 0) return { frameW: vw, frameH: vh };
-  const f0 = poseData?.frames?.[0];
+  const f0 = frameByTime[0];
   return {
-    frameW: f0?.infer_width || 640,
-    frameH: f0?.infer_height || 480,
+    frameW: poseData?.infer_width || f0?.w || 640,
+    frameH: poseData?.infer_height || f0?.h || 480,
   };
+}
+
+function chunkRangeForFrame(frameIdx) {
+  const idx = Math.max(1, Number(frameIdx) || 1);
+  const start = Math.floor((idx - 1) / FRAME_CHUNK_SIZE) * FRAME_CHUNK_SIZE + 1;
+  return { from: start, to: start + FRAME_CHUNK_SIZE - 1 };
+}
+
+async function prefetchFrameChunk(from, to) {
+  if (!currentRecordId || (poseData?.schema || 1) < 2) return;
+  const lo = Math.max(1, from);
+  const hi = Math.max(lo, to);
+  const res = await fetch(
+    `/api/records/${encodeURIComponent(currentRecordId)}/frames?from_frame=${lo}&to_frame=${hi}`
+  );
+  if (!res.ok) return;
+  const body = await res.json();
+  (body.frames || []).forEach((fr) => {
+    if (fr?.frame_idx != null) frameCache.set(fr.frame_idx, fr);
+  });
+}
+
+async function ensureFrame(frameIdx) {
+  if (frameIdx == null) return null;
+  if (frameCache.has(frameIdx)) return frameCache.get(frameIdx);
+  if ((poseData?.schema || 1) >= 2 && currentRecordId) {
+    const { from, to } = chunkRangeForFrame(frameIdx);
+    await prefetchFrameChunk(from, to);
+    return frameCache.get(frameIdx) || null;
+  }
+  return null;
+}
+
+async function prefetchAroundTime(timeSec) {
+  const hit = findFrameAt(timeSec);
+  if (!hit?.frameIdx) return;
+  const { from, to } = chunkRangeForFrame(hit.frameIdx);
+  await prefetchFrameChunk(from, to);
 }
 
 function getDisplayLayout() {
@@ -286,6 +327,7 @@ async function loadRecords() {
         </div>
         <span class="record-actions">
           <a href="${s.pose_url}" download title="${jsonFile}">下载</a>
+          <a href="/api/records/${encodeURIComponent(s.record_id)}/export.xlsx" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
           ${s.has_video ? `<button type="button" data-annotate="${s.record_id}" data-stem="${s.video_stem || name}">标注</button>` : ""}
           <button type="button" data-replay="${s.record_id}" data-name="${name}" data-json="${jsonFile}" data-has-video="${s.has_video ? "1" : "0"}">回放</button>
         </span>
@@ -367,12 +409,30 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   tabs.forEach((b) => b.classList.toggle("active", b.dataset.tab === "playback"));
   Object.values(panels).forEach((p) => p.classList.remove("active"));
   panels.playback.classList.add("active");
+  const exportLink = $("#playback-export-xlsx");
+  if (exportLink) {
+    if (recordId) {
+      exportLink.href = `/api/records/${encodeURIComponent(recordId)}/export.xlsx`;
+      exportLink.download = `${recordId}_skeleton.xlsx`;
+      exportLink.classList.remove("hidden");
+    } else {
+      exportLink.classList.add("hidden");
+    }
+  }
   await cleanupPlaybackVideo();
   clearVideoElement();
-  const poseRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/pose.json`);
-  if (!poseRes.ok) throw new Error("无法加载骨架 JSON");
-  poseData = await poseRes.json();
-  buildFrameIndex();
+  currentRecordId = recordId;
+  frameCache.clear();
+  const poseRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/manifest.json`);
+  if (!poseRes.ok) {
+    const fallback = await fetch(`/api/records/${encodeURIComponent(recordId)}/pose.json`);
+    if (!fallback.ok) throw new Error("无法加载骨架记录");
+    poseData = await fallback.json();
+  } else {
+    poseData = await poseRes.json();
+  }
+  await buildFrameIndex(recordId);
+  await prefetchFrameChunk(1, FRAME_CHUNK_SIZE);
   if (!annotationBoxes.length) {
     try {
       const annRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/annotation.json`);
@@ -389,8 +449,9 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
       : "";
   $("#playback-video").value = "";
   const label = displayName || recordId;
-  const jsonFile = jsonFileName || `${recordId}.json`;
-  const baseHint = `【${label}】${jsonFile}（${poseData.frame_count ?? 0} 帧）`;
+  const jsonFile = jsonFileName || poseData?.pose_file || `${recordId}/manifest.json`;
+  const storageHint = (poseData?.schema || 1) >= 2 ? " · Parquet" : "";
+  const baseHint = `【${label}】${jsonFile}（${poseData.frame_count ?? 0} 帧${storageHint}）`;
 
   const videoLoaded = await loadSavedRecordVideo(recordId);
   if (videoLoaded) {
@@ -685,20 +746,44 @@ async function loadAnnotationBoxesFromFile(file) {
   loadAnnotationBoxesFromData(data);
 }
 
-function buildFrameIndex() {
+function buildFrameIndex(recordId = null) {
   frameByTime = [];
+  frameCache.clear();
   resetPlaybackCollisionTracker();
   syncAnnotationBoxesFromPose();
-  if (!poseData?.frames?.length) return;
+  if (!poseData) return Promise.resolve();
+
+  if ((poseData.schema || 1) >= 2 && recordId) {
+    return fetch(`/api/records/${encodeURIComponent(recordId)}/timeline`)
+      .then((res) => (res.ok ? res.json() : { timeline: [] }))
+      .then((body) => {
+        const inferW = poseData.infer_width || 640;
+        const inferH = poseData.infer_height || 480;
+        (body.timeline || []).forEach((row) => {
+          frameByTime.push({
+            t: row.timestamp_sec ?? 0,
+            frameIdx: row.frame_idx,
+            w: row.infer_width || inferW,
+            h: row.infer_height || inferH,
+          });
+        });
+        frameByTime.sort((a, b) => a.t - b.t);
+      });
+  }
+
+  if (!poseData?.frames?.length) return Promise.resolve();
   poseData.frames.forEach((f) => {
     frameByTime.push({
       t: f.timestamp_sec ?? 0,
+      frameIdx: f.frame_idx,
       frame: f,
       w: f.infer_width || 640,
       h: f.infer_height || 480,
     });
+    if (f.frame_idx != null) frameCache.set(f.frame_idx, f);
   });
   frameByTime.sort((a, b) => a.t - b.t);
+  return Promise.resolve();
 }
 
 function findFrameAt(timeSec) {
@@ -798,19 +883,16 @@ function redrawCurrentFrame() {
   if (videoEl.src && videoEl.readyState >= 1) {
     renderAtTime(videoEl.currentTime);
   } else if (frameByTime.length) {
-    drawSkeleton(frameByTime[0].frame, frameByTime[0].w, frameByTime[0].h);
+    renderFrameEntry(frameByTime[0]);
   }
 }
 
-function renderAtTime(timeSec) {
-  const hit = findFrameAt(timeSec);
-  if (!hit) {
-    const { cw, ch } = syncCanvasSize();
-    ctx.clearRect(0, 0, cw, ch);
-    return;
-  }
-  drawSkeleton(hit.frame, hit.w, hit.h);
-  const { collisionSet, alarmSet } = getFrameCollisionSets(hit.frame, hit.w, hit.h);
+async function renderFrameEntry(hit) {
+  if (!hit) return;
+  const frame = hit.frame || (await ensureFrame(hit.frameIdx));
+  if (!frame) return;
+  drawSkeleton(frame, hit.w, hit.h);
+  const { collisionSet, alarmSet } = getFrameCollisionSets(frame, hit.w, hit.h);
   if (collisionSet.size || alarmSet.size) {
     const c = [...collisionSet].join(", ") || "—";
     const a = [...alarmSet].join(", ") || "—";
@@ -818,6 +900,19 @@ function renderAtTime(timeSec) {
   } else {
     timeLabel.title = annotationBoxes.length ? "无碰撞" : "";
   }
+}
+
+async function renderAtTime(timeSec) {
+  const hit = findFrameAt(timeSec);
+  if (!hit) {
+    const { cw, ch } = syncCanvasSize();
+    ctx.clearRect(0, 0, cw, ch);
+    return;
+  }
+  if ((poseData?.schema || 1) >= 2) {
+    await prefetchAroundTime(timeSec);
+  }
+  await renderFrameEntry(hit);
 }
 
 function tick() {
@@ -861,9 +956,9 @@ function startJsonOnlyPlayback() {
   clearInterval(jsonOnlyTimer);
   videoEl.style.display = "none";
 
-  jsonOnlyTimer = setInterval(() => {
+  jsonOnlyTimer = setInterval(async () => {
     if (idx >= frameByTime.length) idx = 0;
-    drawSkeleton(frameByTime[idx].frame, frameByTime[idx].w, frameByTime[idx].h);
+    await renderFrameEntry(frameByTime[idx]);
     seekBar.value = String((idx / frameByTime.length) * 1000);
     timeLabel.textContent = `${idx + 1}/${frameByTime.length}`;
     idx += 1;
@@ -876,7 +971,8 @@ $("#playback-json").addEventListener("change", async (e) => {
   await cleanupPlaybackVideo();
   clearVideoElement();
   poseData = JSON.parse(await file.text());
-  buildFrameIndex();
+  currentRecordId = null;
+  await buildFrameIndex();
   $("#playback-annotation").value = "";
   const f0 = frameByTime[0];
   setPlaybackInfo(

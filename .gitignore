@@ -28,6 +28,8 @@ localdata/json/*
 !localdata/json/.gitkeep
 localdata/json/annotations/*
 !localdata/json/annotations/.gitkeep
+localdata/json/archive/*
+!localdata/json/archive/.gitkeep
 
 # 配套视频（体积大）
 localdata/video/*

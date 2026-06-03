@@ -9,3 +9,5 @@ rtmlib>=0.0.13
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9
+openpyxl>=3.1.0
+pyarrow>=14.0.0

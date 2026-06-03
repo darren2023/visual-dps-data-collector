@@ -10,6 +10,7 @@ from typing import Any, Callable
 import cv2
 
 from model_assets import COCO17_KEYPOINT_NAMES, RTMPOSE_VARIANTS, VIDEO_EXTENSIONS
+from pose_store import STORAGE_V2_PARQUET, write_v2_package
 from rtmpose_infer import PoseBatch, RTMPosePipeline
 
 try:
@@ -55,14 +56,11 @@ def persons_from_batch(batch: PoseBatch) -> list[dict[str, Any]]:
 
     for p_idx in range(batch.num_persons):
         keypoints_flat: list[list[float]] = []
-        keypoints_named: list[dict[str, float | str]] = []
         for k in range(kpts_all.shape[1]):
             x = float(kpts_all[p_idx][k][0])
             y = float(kpts_all[p_idx][k][1])
             score = float(scores_all[p_idx][k])
             keypoints_flat.append([x, y, score])
-            name = COCO17_KEYPOINT_NAMES[k] if k < len(COCO17_KEYPOINT_NAMES) else f"kpt_{k}"
-            keypoints_named.append({"name": name, "x": x, "y": y, "score": score})
 
         bbox = None
         if p_idx < len(bboxes):
@@ -73,7 +71,6 @@ def persons_from_batch(batch: PoseBatch) -> list[dict[str, Any]]:
                 "person_id": p_idx,
                 "bbox": bbox,
                 "keypoints": keypoints_flat,
-                "keypoints_named": keypoints_named,
             }
         )
     return persons
@@ -267,12 +264,21 @@ def collect_from_video(
     return result
 
 
-def write_json(data: dict[str, Any], output_path: str | Path) -> Path:
+def write_collect_output(data: dict[str, Any], output_path: str | Path) -> Path:
+    """写入采集结果：目录 → schema v2 Parquet；.json 文件 → v1 兼容。"""
     out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return out.resolve()
+    if out.suffix.lower() == ".json":
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        return out.resolve()
+    record_id = out.name if out.suffix == "" else out.stem
+    return write_v2_package(out, data, record_id=record_id)
+
+
+def write_json(data: dict[str, Any], output_path: str | Path) -> Path:
+    """兼容旧调用：默认写入 v2 Parquet 包（output_path 为目录）。"""
+    return write_collect_output(data, output_path)
 
 
 def run_collect_job(
@@ -327,5 +333,6 @@ def run_collect_job(
     )
     data["collected_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     data["elapsed_sec"] = round(time.perf_counter() - t0, 3)
-    write_json(data, output_path)
+    data["storage"] = STORAGE_V2_PARQUET if Path(output_path).suffix.lower() != ".json" else "v1_json"
+    write_collect_output(data, output_path)
     return data
