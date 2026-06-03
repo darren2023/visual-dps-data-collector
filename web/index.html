@@ -122,13 +122,33 @@
         <video id="playback-video-el" playsinline controls preload="metadata"></video>
         <canvas id="playback-canvas"></canvas>
       </div>
-      <div class="controls">
-        <button type="button" id="play-btn">播放</button>
-        <button type="button" id="pause-btn">暂停</button>
-        <button type="button" id="end-playback-btn">停止回放</button>
-        <a id="playback-export-xlsx" class="btn-link hidden" href="#" download>导出 Excel</a>
-        <input type="range" id="seek-bar" min="0" max="1000" value="0" />
-        <span id="time-label">0:00</span>
+      <div class="playback-transport">
+        <div class="controls">
+          <button type="button" id="play-btn">播放</button>
+          <button type="button" id="pause-btn">暂停</button>
+          <button type="button" id="end-playback-btn">停止回放</button>
+          <a id="playback-export-xlsx" class="btn-link hidden" href="#" download>导出 Excel</a>
+          <span id="time-label">0:00</span>
+        </div>
+        <div class="seek-stack">
+          <div id="seek-event-markers" class="seek-event-markers" aria-hidden="true"></div>
+          <input type="range" id="seek-bar" min="0" max="1000" value="0" />
+        </div>
+        <div id="playback-events-panel" class="playback-events-panel hidden">
+          <div class="playback-events-head">
+            <strong>事件跳转</strong>
+            <label class="event-filter-label">
+              筛选
+              <select id="event-filter">
+                <option value="all">全部</option>
+                <option value="alarm">告警</option>
+                <option value="collision">碰撞</option>
+              </select>
+            </label>
+            <span id="event-count-label" class="hint">—</span>
+          </div>
+          <ul id="event-jump-list" class="event-jump-list"></ul>
+        </div>
       </div>
       <p id="playback-info" class="hint"></p>
     </section>
@@ -136,7 +156,7 @@
 
   <script src="previewLayout.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=8"></script>
   <script src="annotate.js?v=3"></script>
 </body>
 </html>

@@ -401,37 +401,78 @@ def load_pose_document(locator: RecordLocator, *, include_frames: bool = True) -
     return doc
 
 
-def load_timeline(locator: RecordLocator) -> list[dict[str, Any]]:
-    """轻量时间轴（回放索引用，不含骨架与事件）。"""
+def load_timeline(locator: RecordLocator, *, include_events: bool = False) -> list[dict[str, Any]]:
+    """轻量时间轴（回放索引用；可选含 collisions / alarm_collisions）。"""
     if locator.storage == STORAGE_V1_JSON:
         data = load_manifest(locator)
         rows: list[dict[str, Any]] = []
         for fr in data.get("frames") or []:
             if not isinstance(fr, dict):
                 continue
-            rows.append(
-                {
-                    "frame_idx": int(fr.get("frame_idx") or 0),
-                    "source_frame_idx": int(fr.get("source_frame_idx") or fr.get("frame_idx") or 0),
-                    "timestamp_sec": float(fr.get("timestamp_sec") or 0.0),
-                    "infer_width": int(fr.get("infer_width") or 0),
-                    "infer_height": int(fr.get("infer_height") or 0),
-                }
-            )
+            row = {
+                "frame_idx": int(fr.get("frame_idx") or 0),
+                "source_frame_idx": int(fr.get("source_frame_idx") or fr.get("frame_idx") or 0),
+                "timestamp_sec": float(fr.get("timestamp_sec") or 0.0),
+                "infer_width": int(fr.get("infer_width") or 0),
+                "infer_height": int(fr.get("infer_height") or 0),
+            }
+            if include_events:
+                row["collisions"] = list(fr.get("collisions") or [])
+                row["alarm_collisions"] = list(fr.get("alarm_collisions") or [])
+            rows.append(row)
         return rows
 
     rows_raw = _read_parquet_table(locator.path / TIMELINE_FILE)
-    return [
-        {
+    out: list[dict[str, Any]] = []
+    for r in rows_raw:
+        if not isinstance(r, dict):
+            continue
+        row = {
             "frame_idx": int(r.get("frame_idx") or 0),
             "source_frame_idx": int(r.get("source_frame_idx") or r.get("frame_idx") or 0),
             "timestamp_sec": float(r.get("timestamp_sec") or 0.0),
             "infer_width": int(r.get("infer_width") or 0),
             "infer_height": int(r.get("infer_height") or 0),
         }
-        for r in rows_raw
-        if isinstance(r, dict)
-    ]
+        if include_events:
+            row["collisions"] = list(r.get("collisions") or [])
+            row["alarm_collisions"] = list(r.get("alarm_collisions") or [])
+        out.append(row)
+    return out
+
+
+def load_events(locator: RecordLocator) -> list[dict[str, Any]]:
+    """碰撞/告警事件列表（每帧每类型一条，供回放跳转）。"""
+    rows = load_timeline(locator, include_events=True)
+    events: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda r: int(r.get("frame_idx") or 0)):
+        ts = float(row.get("timestamp_sec") or 0.0)
+        fi = int(row.get("frame_idx") or 0)
+        sfi = int(row.get("source_frame_idx") or fi)
+        alarms = [str(t) for t in (row.get("alarm_collisions") or []) if str(t).strip()]
+        collisions = [str(t) for t in (row.get("collisions") or []) if str(t).strip()]
+        if alarms:
+            events.append(
+                {
+                    "event_type": "alarm",
+                    "frame_idx": fi,
+                    "source_frame_idx": sfi,
+                    "timestamp_sec": ts,
+                    "box_tokens": alarms,
+                }
+            )
+        coll_only = [t for t in collisions if t not in set(alarms)]
+        if coll_only:
+            events.append(
+                {
+                    "event_type": "collision",
+                    "frame_idx": fi,
+                    "source_frame_idx": sfi,
+                    "timestamp_sec": ts,
+                    "box_tokens": coll_only,
+                }
+            )
+    return events
 
 
 def load_pose_header(locator: RecordLocator) -> dict[str, Any]:
@@ -490,3 +531,45 @@ def migrate_v1_json_dir(json_dir: Path) -> list[Path]:
         out = convert_v1_json_to_v2_package(p)
         migrated.append(out)
     return migrated
+
+
+def delete_record(
+    json_dir: Path,
+    locator: RecordLocator,
+    *,
+    video_path: Path | None = None,
+) -> dict[str, Any]:
+    """删除一条历史记录（骨架包/JSON、sidecar meta、配套视频；不删 annotations 目录标注）。"""
+    record_id = locator.record_id
+    deleted: list[str] = []
+
+    if video_path and video_path.is_file():
+        video_path.unlink()
+        deleted.append(str(video_path.resolve()))
+
+    sidecar = meta_sidecar_path(json_dir, record_id)
+    if sidecar.is_file():
+        sidecar.unlink()
+        deleted.append(str(sidecar.resolve()))
+
+    if locator.path.is_file():
+        legacy_sidecar = locator.path.with_suffix(".meta.json")
+        if legacy_sidecar.is_file() and legacy_sidecar.resolve() != sidecar.resolve():
+            legacy_sidecar.unlink()
+            deleted.append(str(legacy_sidecar.resolve()))
+        locator.path.unlink()
+        deleted.append(str(locator.path.resolve()))
+    elif locator.path.is_dir():
+        shutil.rmtree(locator.path)
+        deleted.append(str(locator.path.resolve()))
+
+    legacy_ann = json_dir / f"{record_id}_annotation.json"
+    if legacy_ann.is_file():
+        legacy_ann.unlink()
+        deleted.append(str(legacy_ann.resolve()))
+
+    return {
+        "status": "deleted",
+        "record_id": record_id,
+        "deleted_paths": deleted,
+    }

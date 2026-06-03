@@ -14,7 +14,18 @@ let annotationBoxes = [];
 let annotationSize = null;
 let frameByTime = [];
 let frameCache = new Map();
+/** 已拉取的 Parquet 分块 "from-to"，避免播放时重复请求 */
+const loadedChunkKeys = new Set();
+const prefetchPromises = new Map();
+let renderGeneration = 0;
+let lastRenderedFrameIdx = -1;
+/** 播放循环中已绘制的骨架帧号，避免 RAF 在相邻帧边界来回切换 */
+let tickPoseFrameIdx = -1;
 let currentRecordId = null;
+let playbackEvents = [];
+/** 事件列表来自回放实时重算（非采集落盘） */
+let playbackEventsFromRealtime = false;
+let activeEventKey = null;
 const FRAME_CHUNK_SIZE = 120;
 let rafId = null;
 let playbackId = null;
@@ -66,18 +77,50 @@ function chunkRangeForFrame(frameIdx) {
   return { from: start, to: start + FRAME_CHUNK_SIZE - 1 };
 }
 
+function resetFrameFetchState() {
+  frameCache.clear();
+  loadedChunkKeys.clear();
+  prefetchPromises.clear();
+  lastRenderedFrameIdx = -1;
+  tickPoseFrameIdx = -1;
+  renderGeneration++;
+}
+
 async function prefetchFrameChunk(from, to) {
   if (!currentRecordId || (poseData?.schema || 1) < 2) return;
   const lo = Math.max(1, from);
   const hi = Math.max(lo, to);
-  const res = await fetch(
-    `/api/records/${encodeURIComponent(currentRecordId)}/frames?from_frame=${lo}&to_frame=${hi}`
-  );
-  if (!res.ok) return;
-  const body = await res.json();
-  (body.frames || []).forEach((fr) => {
-    if (fr?.frame_idx != null) frameCache.set(fr.frame_idx, fr);
+  const key = `${lo}-${hi}`;
+  if (loadedChunkKeys.has(key)) return;
+  if (prefetchPromises.has(key)) return prefetchPromises.get(key);
+
+  const promise = (async () => {
+    const res = await fetch(
+      `/api/records/${encodeURIComponent(currentRecordId)}/frames?from_frame=${lo}&to_frame=${hi}`
+    );
+    if (!res.ok) return;
+    const body = await res.json();
+    (body.frames || []).forEach((fr) => {
+      if (fr?.frame_idx != null) frameCache.set(fr.frame_idx, fr);
+    });
+    loadedChunkKeys.add(key);
+  })().finally(() => {
+    prefetchPromises.delete(key);
   });
+
+  prefetchPromises.set(key, promise);
+  return promise;
+}
+
+function prefetchNextChunkIfNeeded(frameIdx) {
+  const idx = Number(frameIdx) || 0;
+  if (!idx || !currentRecordId) return;
+  const { to } = chunkRangeForFrame(idx);
+  const nextFrom = to + 1;
+  const total = Number(poseData?.frame_count) || 0;
+  if (nextFrom > total) return;
+  const nextTo = Math.min(nextFrom + FRAME_CHUNK_SIZE - 1, total);
+  void prefetchFrameChunk(nextFrom, nextTo);
 }
 
 async function ensureFrame(frameIdx) {
@@ -91,11 +134,15 @@ async function ensureFrame(frameIdx) {
   return null;
 }
 
-async function prefetchAroundTime(timeSec) {
-  const hit = findFrameAt(timeSec);
-  if (!hit?.frameIdx) return;
-  const { from, to } = chunkRangeForFrame(hit.frameIdx);
+async function ensureFrameChunkLoaded(frameIdx) {
+  if (frameIdx == null) return;
+  if (frameCache.has(frameIdx)) {
+    prefetchNextChunkIfNeeded(frameIdx);
+    return;
+  }
+  const { from, to } = chunkRangeForFrame(frameIdx);
   await prefetchFrameChunk(from, to);
+  prefetchNextChunkIfNeeded(frameIdx);
 }
 
 function getDisplayLayout() {
@@ -330,6 +377,7 @@ async function loadRecords() {
           <a href="/api/records/${encodeURIComponent(s.record_id)}/export.xlsx" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
           ${s.has_video ? `<button type="button" data-annotate="${s.record_id}" data-stem="${s.video_stem || name}">标注</button>` : ""}
           <button type="button" data-replay="${s.record_id}" data-name="${name}" data-json="${jsonFile}" data-has-video="${s.has_video ? "1" : "0"}">回放</button>
+          <button type="button" class="danger-btn" data-delete="${s.record_id}" data-name="${name}">删除</button>
         </span>
       </li>`;
       })
@@ -352,6 +400,38 @@ async function loadRecords() {
       btn.addEventListener("click", () => {
         if (typeof window.openAnnotateForRecord === "function") {
           window.openAnnotateForRecord(btn.dataset.annotate, btn.dataset.stem);
+        }
+      });
+    });
+    list.querySelectorAll("[data-delete]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const rid = btn.dataset.delete;
+        const name = btn.dataset.name || rid;
+        if (
+          !window.confirm(
+            `确定删除记录「${name}」？\n\n将删除骨架数据、meta 与配套视频。\nannotations/ 目录下的标注文件不会删除。`
+          )
+        ) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/records/${encodeURIComponent(rid)}`, { method: "DELETE" });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || res.statusText || "删除失败");
+          }
+          if (currentRecordId === rid) {
+            finishPlaybackSession();
+            currentRecordId = null;
+          }
+          await loadRecords();
+          if (typeof loadAnnotateRecordSelect === "function") {
+            loadAnnotateRecordSelect();
+          }
+        } catch (err) {
+          window.alert(`删除失败：${err.message}`);
+          btn.disabled = false;
         }
       });
     });
@@ -395,6 +475,8 @@ async function startVideoPlayback(hintPrefix = "") {
   try {
     await videoEl.play();
     cancelAnimationFrame(rafId);
+    tickPoseFrameIdx = -1;
+    resetPlaybackCollisionTracker();
     tick();
     if (hintPrefix) setPlaybackInfo(`${hintPrefix}正在播放…`);
     return true;
@@ -422,7 +504,7 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   await cleanupPlaybackVideo();
   clearVideoElement();
   currentRecordId = recordId;
-  frameCache.clear();
+  resetFrameFetchState();
   const poseRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/manifest.json`);
   if (!poseRes.ok) {
     const fallback = await fetch(`/api/records/${encodeURIComponent(recordId)}/pose.json`);
@@ -443,8 +525,9 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
       /* 无独立标注文件时忽略 */
     }
   }
+  await loadPlaybackEvents(recordId);
   const collisionHint =
-    annotationBoxes.length && !poseData?.collision?.enabled
+    annotationBoxes.length && !collisionPersistedAtCollect()
       ? " · 已加载标注，回放时将实时计算碰撞"
       : "";
   $("#playback-video").value = "";
@@ -481,6 +564,294 @@ const canvas = $("#playback-canvas");
 const ctx = canvas.getContext("2d");
 const seekBar = $("#seek-bar");
 const timeLabel = $("#time-label");
+const eventMarkersEl = $("#seek-event-markers");
+const eventJumpList = $("#event-jump-list");
+const eventFilterSelect = $("#event-filter");
+const eventCountLabel = $("#event-count-label");
+const eventsPanel = $("#playback-events-panel");
+
+function eventRowKey(ev) {
+  return `${ev.event_type}:${ev.frame_idx}:${(ev.box_tokens || []).join(",")}`;
+}
+
+function buildEventsFromFrames(frames) {
+  const events = [];
+  (frames || []).forEach((fr) => {
+    if (!fr || typeof fr !== "object") return;
+    const ts = Number(fr.timestamp_sec) || 0;
+    const fi = Number(fr.frame_idx) || 0;
+    const sfi = Number(fr.source_frame_idx) || fi;
+    const alarms = [...(fr.alarm_collisions || [])].map(String).filter(Boolean);
+    const collisions = [...(fr.collisions || [])].map(String).filter(Boolean);
+    if (alarms.length) {
+      events.push({
+        event_type: "alarm",
+        frame_idx: fi,
+        source_frame_idx: sfi,
+        timestamp_sec: ts,
+        box_tokens: alarms,
+      });
+    }
+    const collOnly = collisions.filter((t) => !alarms.includes(t));
+    if (collOnly.length) {
+      events.push({
+        event_type: "collision",
+        frame_idx: fi,
+        source_frame_idx: sfi,
+        timestamp_sec: ts,
+        box_tokens: collOnly,
+      });
+    }
+  });
+  events.sort((a, b) => a.timestamp_sec - b.timestamp_sec || a.frame_idx - b.frame_idx);
+  return events;
+}
+
+function getPlaybackDurationSec() {
+  if (videoEl.duration && Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+    return videoEl.duration;
+  }
+  if (frameByTime.length) {
+    const last = frameByTime[frameByTime.length - 1];
+    const tail = last?.t || 0;
+    const fps = poseData?.fps || 15;
+    return Math.max(tail + 1 / fps, tail);
+  }
+  return 0;
+}
+
+function formatEventTokens(tokens) {
+  const list = (tokens || []).filter(Boolean);
+  if (!list.length) return "—";
+  if (list.length <= 2) return list.join(", ");
+  return `${list.slice(0, 2).join(", ")} +${list.length - 2}`;
+}
+
+function filteredPlaybackEvents() {
+  const mode = eventFilterSelect?.value || "all";
+  if (mode === "all") return playbackEvents;
+  return playbackEvents.filter((e) => e.event_type === mode);
+}
+
+function renderEventMarkers() {
+  if (!eventMarkersEl) return;
+  eventMarkersEl.innerHTML = "";
+  const dur = getPlaybackDurationSec();
+  if (!dur || !playbackEvents.length) return;
+
+  filteredPlaybackEvents().forEach((ev) => {
+    const pct = Math.min(100, Math.max(0, (ev.timestamp_sec / dur) * 100));
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = `event-marker ${ev.event_type}`;
+    dot.style.left = `${pct}%`;
+    dot.title = `${ev.event_type === "alarm" ? "告警" : "碰撞"} ${formatTime(ev.timestamp_sec)} · ${formatEventTokens(ev.box_tokens)}`;
+    dot.addEventListener("click", (e) => {
+      e.stopPropagation();
+      seekToEvent(ev);
+    });
+    eventMarkersEl.appendChild(dot);
+  });
+}
+
+function renderEventJumpList() {
+  if (!eventJumpList || !eventsPanel) return;
+  const list = filteredPlaybackEvents();
+  const alarmN = playbackEvents.filter((e) => e.event_type === "alarm").length;
+  const collN = playbackEvents.filter((e) => e.event_type === "collision").length;
+
+  if (!playbackEvents.length) {
+    eventsPanel.classList.add("hidden");
+    eventJumpList.innerHTML = "";
+    if (eventCountLabel) {
+      const hint = annotationBoxes.length
+        ? "无碰撞事件（已按标注实时扫描）"
+        : "无事件（需采集时启用碰撞或加载标注）";
+      eventCountLabel.textContent = hint;
+    }
+    return;
+  }
+
+  eventsPanel.classList.remove("hidden");
+  if (eventCountLabel) {
+    const rtHint = playbackEventsFromRealtime ? " · 回放实时计算" : "";
+    eventCountLabel.textContent = `告警 ${alarmN} · 碰撞 ${collN}${rtHint}${list.length !== playbackEvents.length ? ` · 显示 ${list.length}` : ""}`;
+  }
+
+  eventJumpList.innerHTML = list
+    .map((ev) => {
+      const key = eventRowKey(ev);
+      const typeLabel = ev.event_type === "alarm" ? "告警" : "碰撞";
+      const active = key === activeEventKey ? " active" : "";
+      return `<li><button type="button" class="event-jump-btn${active}" data-event-key="${key}">
+        <span class="event-badge ${ev.event_type}">${typeLabel}</span>
+        <span>${formatTime(ev.timestamp_sec)} · 帧 ${ev.frame_idx}</span>
+        <span class="event-meta">${formatEventTokens(ev.box_tokens)}</span>
+      </button></li>`;
+    })
+    .join("");
+
+  eventJumpList.querySelectorAll(".event-jump-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.eventKey;
+      const ev = playbackEvents.find((e) => eventRowKey(e) === key);
+      if (ev) seekToEvent(ev);
+    });
+  });
+  renderEventMarkers();
+}
+
+/** 采集时是否已启用碰撞并落盘（有则信任存储字段，含空数组） */
+function collisionPersistedAtCollect() {
+  return !!(poseData?.collision?.enabled);
+}
+
+function frameUsesStoredCollisions(frame) {
+  if (!collisionPersistedAtCollect() || !frame) return false;
+  return (
+    ("collisions" in frame || "alarm_collisions" in frame) &&
+    (Array.isArray(frame.collisions) || Array.isArray(frame.alarm_collisions))
+  );
+}
+
+async function collectAllFramesForPlayback(recordId) {
+  if ((poseData?.schema || 1) < 2) {
+    if (poseData?.frames?.length) {
+      return poseData.frames.filter((f) => f && typeof f === "object");
+    }
+    return frameByTime.map((e) => e.frame).filter(Boolean);
+  }
+  const total = Number(poseData?.frame_count) || frameByTime.length;
+  if (!recordId || total <= 0) return [];
+  for (let from = 1; from <= total; from += FRAME_CHUNK_SIZE) {
+    const to = Math.min(from + FRAME_CHUNK_SIZE - 1, total);
+    await prefetchFrameChunk(from, to);
+  }
+  const frames = [];
+  for (let i = 1; i <= total; i++) {
+    const fr = frameCache.get(i);
+    if (fr) frames.push(fr);
+  }
+  frames.sort((a, b) => (Number(a.frame_idx) || 0) - (Number(b.frame_idx) || 0));
+  return frames;
+}
+
+/** 无采集碰撞落盘但有标注时，按帧扫描生成事件（方案一：仅回放侧） */
+async function buildPlaybackEventsFromRealtime(recordId) {
+  if (!annotationBoxes.length || collisionPersistedAtCollect()) return [];
+  resetPlaybackCollisionTracker();
+  const tracker = getPlaybackCollisionTracker();
+  const frames = await collectAllFramesForPlayback(recordId);
+  const events = [];
+  for (const fr of frames) {
+    const inferW = Number(fr.infer_width) || Number(poseData?.infer_width) || 640;
+    const inferH = Number(fr.infer_height) || Number(poseData?.infer_height) || 480;
+    const computed = tracker.update(fr, inferW, inferH);
+    const ts = Number(fr.timestamp_sec) || 0;
+    const fi = Number(fr.frame_idx) || 0;
+    const sfi = Number(fr.source_frame_idx) || fi;
+    const alarms = [...(computed.alarm_collisions || [])].map(String).filter(Boolean);
+    const collisions = [...(computed.collisions || [])].map(String).filter(Boolean);
+    if (alarms.length) {
+      events.push({
+        event_type: "alarm",
+        frame_idx: fi,
+        source_frame_idx: sfi,
+        timestamp_sec: ts,
+        box_tokens: alarms,
+      });
+    }
+    const collOnly = collisions.filter((t) => !alarms.includes(t));
+    if (collOnly.length) {
+      events.push({
+        event_type: "collision",
+        frame_idx: fi,
+        source_frame_idx: sfi,
+        timestamp_sec: ts,
+        box_tokens: collOnly,
+      });
+    }
+  }
+  events.sort((a, b) => a.timestamp_sec - b.timestamp_sec || a.frame_idx - b.frame_idx);
+  return events;
+}
+
+async function loadPlaybackEvents(recordId = null) {
+  playbackEvents = [];
+  playbackEventsFromRealtime = false;
+  activeEventKey = null;
+
+  if (recordId) {
+    try {
+      const res = await fetch(`/api/records/${encodeURIComponent(recordId)}/events`);
+      if (res.ok) {
+        const body = await res.json();
+        playbackEvents = Array.isArray(body.events) ? body.events : [];
+      }
+    } catch {
+      /* 忽略 */
+    }
+  } else if (poseData?.frames?.length) {
+    playbackEvents = buildEventsFromFrames(poseData.frames);
+  }
+
+  const needRealtime =
+    !playbackEvents.length && annotationBoxes.length > 0 && !collisionPersistedAtCollect();
+  if (needRealtime) {
+    playbackEvents = await buildPlaybackEventsFromRealtime(recordId);
+    playbackEventsFromRealtime = playbackEvents.length > 0;
+    resetPlaybackCollisionTracker();
+  }
+
+  renderEventJumpList();
+}
+
+async function seekToTimestamp(timeSec, frameIdx = null) {
+  lastRenderedFrameIdx = -1;
+  tickPoseFrameIdx = -1;
+  resetPlaybackCollisionTracker();
+  const t = Math.max(0, Number(timeSec) || 0);
+  if (videoEl.duration && Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+    videoEl.currentTime = Math.min(t, videoEl.duration);
+    seekBar.value = String((videoEl.currentTime / videoEl.duration) * 1000);
+    timeLabel.textContent = formatTime(videoEl.currentTime);
+    await renderAtTime(videoEl.currentTime);
+    return;
+  }
+
+  let hit = null;
+  if (frameIdx != null) {
+    hit = frameByTime.find((item) => item.frameIdx === frameIdx) || null;
+  }
+  if (!hit) hit = findFrameAt(t);
+  if (hit) {
+    await renderFrameEntry(hit);
+    const idx = frameByTime.indexOf(hit);
+    if (idx >= 0 && frameByTime.length) {
+      seekBar.value = String((idx / frameByTime.length) * 1000);
+      timeLabel.textContent = `${idx + 1}/${frameByTime.length}`;
+    } else {
+      timeLabel.textContent = formatTime(t);
+    }
+  }
+}
+
+async function seekToEvent(ev) {
+  if (!ev) return;
+  activeEventKey = eventRowKey(ev);
+  renderEventJumpList();
+  await seekToTimestamp(ev.timestamp_sec, ev.frame_idx);
+}
+
+function clearPlaybackEvents() {
+  playbackEvents = [];
+  playbackEventsFromRealtime = false;
+  activeEventKey = null;
+  if (eventMarkersEl) eventMarkersEl.innerHTML = "";
+  if (eventJumpList) eventJumpList.innerHTML = "";
+  if (eventsPanel) eventsPanel.classList.add("hidden");
+  if (eventCountLabel) eventCountLabel.textContent = "—";
+}
 
 function setPlaybackInfo(text) {
   $("#playback-info").textContent = text;
@@ -488,6 +859,7 @@ function setPlaybackInfo(text) {
 
 function clearVideoElement() {
   stopPlayback();
+  clearPlaybackEvents();
   videoEl.pause();
   videoEl.removeAttribute("src");
   videoEl.load();
@@ -655,11 +1027,7 @@ function getPlaybackCollisionTracker() {
 }
 
 function getFrameCollisionSets(frame, inferW, inferH) {
-  const hasStored =
-    frame &&
-    ("collisions" in frame || "alarm_collisions" in frame) &&
-    (Array.isArray(frame.collisions) || Array.isArray(frame.alarm_collisions));
-  if (hasStored) {
+  if (frameUsesStoredCollisions(frame)) {
     return {
       collisionSet: new Set(frame.collisions || []),
       alarmSet: new Set(frame.alarm_collisions || []),
@@ -748,7 +1116,7 @@ async function loadAnnotationBoxesFromFile(file) {
 
 function buildFrameIndex(recordId = null) {
   frameByTime = [];
-  frameCache.clear();
+  resetFrameFetchState();
   resetPlaybackCollisionTracker();
   syncAnnotationBoxesFromPose();
   if (!poseData) return Promise.resolve();
@@ -808,7 +1176,7 @@ function syncCanvasSize() {
   return { cw: cssW, ch: cssH };
 }
 
-function drawAnnotationBoxes(frame, inferW, inferH) {
+function drawAnnotationBoxes(frame, inferW, inferH, collisionSets = null) {
   if (!annotationBoxes.length) return;
   const pl = window.previewLayout;
   if (!pl?.resolvePolygonFramePoints || !pl?.mapPointToDisplay) return;
@@ -816,7 +1184,8 @@ function drawAnnotationBoxes(frame, inferW, inferH) {
   const { frameW, frameH } = getVideoFrameSize();
   const layout = getDisplayLayout();
   const annSize = getEffectiveAnnotationSize();
-  const { collisionSet, alarmSet } = getFrameCollisionSets(frame, inferW, inferH);
+  const { collisionSet, alarmSet } =
+    collisionSets || getFrameCollisionSets(frame, inferW, inferH);
 
   annotationBoxes.forEach((box) => {
     const poly = box.video_polygon;
@@ -845,10 +1214,10 @@ function drawAnnotationBoxes(frame, inferW, inferH) {
   });
 }
 
-function drawSkeleton(frame, inferW, inferH) {
+function drawSkeleton(frame, inferW, inferH, collisionSets = null) {
   const { cw, ch } = syncCanvasSize();
   ctx.clearRect(0, 0, cw, ch);
-  drawAnnotationBoxes(frame, inferW, inferH);
+  drawAnnotationBoxes(frame, inferW, inferH, collisionSets);
   if (!frame?.persons?.length) return;
 
   const layout = getDisplayLayout();
@@ -880,19 +1249,26 @@ function drawSkeleton(frame, inferW, inferH) {
 }
 
 function redrawCurrentFrame() {
+  lastRenderedFrameIdx = -1;
+  tickPoseFrameIdx = -1;
   if (videoEl.src && videoEl.readyState >= 1) {
-    renderAtTime(videoEl.currentTime);
+    void renderAtTime(videoEl.currentTime);
   } else if (frameByTime.length) {
-    renderFrameEntry(frameByTime[0]);
+    void renderFrameEntry(frameByTime[0]);
   }
 }
 
-async function renderFrameEntry(hit) {
+async function renderFrameEntry(hit, renderGen) {
   if (!hit) return;
   const frame = hit.frame || (await ensureFrame(hit.frameIdx));
+  if (renderGen != null && renderGen !== renderGeneration) return;
   if (!frame) return;
-  drawSkeleton(frame, hit.w, hit.h);
-  const { collisionSet, alarmSet } = getFrameCollisionSets(frame, hit.w, hit.h);
+  if (hit.frameIdx === lastRenderedFrameIdx) return;
+  lastRenderedFrameIdx = hit.frameIdx;
+  tickPoseFrameIdx = hit.frameIdx;
+  const collisionSets = getFrameCollisionSets(frame, hit.w, hit.h);
+  drawSkeleton(frame, hit.w, hit.h, collisionSets);
+  const { collisionSet, alarmSet } = collisionSets;
   if (collisionSet.size || alarmSet.size) {
     const c = [...collisionSet].join(", ") || "—";
     const a = [...alarmSet].join(", ") || "—";
@@ -903,21 +1279,30 @@ async function renderFrameEntry(hit) {
 }
 
 async function renderAtTime(timeSec) {
+  const gen = ++renderGeneration;
   const hit = findFrameAt(timeSec);
   if (!hit) {
+    if (gen !== renderGeneration) return;
+    lastRenderedFrameIdx = -1;
     const { cw, ch } = syncCanvasSize();
     ctx.clearRect(0, 0, cw, ch);
     return;
   }
-  if ((poseData?.schema || 1) >= 2) {
-    await prefetchAroundTime(timeSec);
+  if ((poseData?.schema || 1) >= 2 && hit.frameIdx != null) {
+    await ensureFrameChunkLoaded(hit.frameIdx);
   }
-  await renderFrameEntry(hit);
+  if (gen !== renderGeneration) return;
+  await renderFrameEntry(hit, gen);
 }
 
 function tick() {
   if (videoEl.readyState >= 2) {
-    renderAtTime(videoEl.currentTime);
+    const hit = findFrameAt(videoEl.currentTime);
+    const nextIdx = hit?.frameIdx ?? -1;
+    // 仅当骨架帧变化时触发绘制；tickPoseFrameIdx 在 renderFrameEntry 成功后再更新
+    if (nextIdx >= 0 && nextIdx !== tickPoseFrameIdx) {
+      void renderAtTime(videoEl.currentTime);
+    }
   }
   if (videoEl.duration && Number.isFinite(videoEl.duration)) {
     seekBar.value = String((videoEl.currentTime / videoEl.duration) * 1000);
@@ -973,6 +1358,7 @@ $("#playback-json").addEventListener("change", async (e) => {
   poseData = JSON.parse(await file.text());
   currentRecordId = null;
   await buildFrameIndex();
+  await loadPlaybackEvents(null);
   $("#playback-annotation").value = "";
   const f0 = frameByTime[0];
   setPlaybackInfo(
@@ -988,7 +1374,9 @@ $("#playback-annotation").addEventListener("change", async (e) => {
   if (!file) return;
   try {
     await loadAnnotationBoxesFromFile(file);
-    setPlaybackInfo(`已导入标注 ${file.name}，${annotationBoxes.length} 个货框`);
+    await loadPlaybackEvents(currentRecordId);
+    const rtNote = playbackEventsFromRealtime ? "，已生成回放事件列表" : "";
+    setPlaybackInfo(`已导入标注 ${file.name}，${annotationBoxes.length} 个货框${rtNote}`);
     redrawCurrentFrame();
   } catch (err) {
     setPlaybackInfo(`❌ 标注 JSON 无效: ${err.message}`);
@@ -1031,6 +1419,8 @@ $("#play-btn").addEventListener("click", async () => {
       return;
     }
     cancelAnimationFrame(rafId);
+    tickPoseFrameIdx = -1;
+    resetPlaybackCollisionTracker();
     tick();
   } else if (poseData) {
     startJsonOnlyPlayback();
@@ -1062,10 +1452,18 @@ videoEl.addEventListener("ended", () => {
 videoEl.addEventListener("loadedmetadata", () => {
   syncCanvasSize();
   redrawCurrentFrame();
+  renderEventMarkers();
+});
+
+eventFilterSelect?.addEventListener("change", () => {
+  renderEventJumpList();
 });
 
 videoEl.addEventListener("seeked", () => {
-  renderAtTime(videoEl.currentTime);
+  lastRenderedFrameIdx = -1;
+  tickPoseFrameIdx = -1;
+  resetPlaybackCollisionTracker();
+  void renderAtTime(videoEl.currentTime);
 });
 
 window.addEventListener("resize", () => {
@@ -1077,15 +1475,21 @@ window.addEventListener("beforeunload", () => {
   cleanupPlaybackVideo();
 });
 
-seekBar.addEventListener("input", () => {
+seekBar.addEventListener("input", async () => {
+  activeEventKey = null;
+  lastRenderedFrameIdx = -1;
+  tickPoseFrameIdx = -1;
+  resetPlaybackCollisionTracker();
   if (!videoEl.duration || !Number.isFinite(videoEl.duration)) {
     const idx = Math.floor((seekBar.value / 1000) * frameByTime.length);
     const item = frameByTime[Math.min(idx, frameByTime.length - 1)];
-    if (item) drawSkeleton(item.frame, item.w, item.h);
+    if (item) await renderFrameEntry(item);
+    renderEventJumpList();
     return;
   }
   videoEl.currentTime = (seekBar.value / 1000) * videoEl.duration;
-  renderAtTime(videoEl.currentTime);
+  await renderAtTime(videoEl.currentTime);
+  renderEventJumpList();
 });
 
 loadRecords();

@@ -52,9 +52,11 @@ from pose_store import (
     load_pose_document,
     load_pose_header,
     load_timeline,
+    load_events,
     meta_sidecar_path,
     migrate_v1_json_dir,
     record_id_from_path,
+    delete_record,
 )
 from video_frame import first_frame_base64
 
@@ -450,6 +452,28 @@ def list_records() -> list[dict[str, Any]]:
     return items[:50]
 
 
+@app.delete("/api/records/{record_id}")
+def delete_record_api(record_id: str) -> dict[str, Any]:
+    """删除历史记录：Parquet 包或 v1 JSON、sidecar meta、配套视频（保留 annotations/ 下标注）。"""
+    rid = str(record_id or "").strip()
+    if not rid:
+        raise HTTPException(400, "record_id 无效")
+    locator = _locate_record(rid, include_archive=False)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    paths = resolve_app_paths()
+    video_path = _video_path_for_record(rid)
+    try:
+        result = delete_record(
+            paths.json_dir,
+            locator,
+            video_path=video_path,
+        )
+    except OSError as exc:
+        raise HTTPException(500, f"删除失败: {exc}") from exc
+    return result
+
+
 @app.get("/api/records/{record_id}/video")
 def get_record_video(record_id: str) -> FileResponse:
     path = _video_path_for_record(record_id)
@@ -688,6 +712,29 @@ def export_record_xlsx(record_id: str) -> Response:
         content=blob,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/records/{record_id}/events")
+def get_record_events(record_id: str) -> JSONResponse:
+    """碰撞/告警事件列表，供回放进度条跳转。"""
+    locator = _locate_record(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    try:
+        events = load_events(locator)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    alarm_n = sum(1 for e in events if e.get("event_type") == "alarm")
+    collision_n = sum(1 for e in events if e.get("event_type") == "collision")
+    return JSONResponse(
+        {
+            "record_id": record_id,
+            "count": len(events),
+            "alarm_count": alarm_n,
+            "collision_count": collision_n,
+            "events": events,
+        }
     )
 
 
