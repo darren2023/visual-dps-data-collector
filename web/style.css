@@ -333,3 +333,79 @@ h2 {
   font-variant-numeric: tabular-nums;
   min-width: 4rem;
 }
+
+main.wide {
+  max-width: 1100px;
+}
+
+.annotate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.75rem 0;
+}
+
+.annotate-actions button,
+.primary-btn {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  padding: 0.45rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.annotate-actions button:not(.primary-btn) {
+  background: #334155;
+}
+
+.inline-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.inline-file input[type="file"] {
+  width: auto;
+  max-width: 11rem;
+  margin: 0;
+  padding: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.annotate-grid-size {
+  margin-top: 0.5rem;
+}
+
+.annotate-stage {
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
+#annotate-canvas {
+  max-width: 100%;
+  border: 2px solid #3d4f66;
+  border-radius: 8px;
+  cursor: crosshair;
+  background: #000;
+}
+
+.annotate-hint {
+  margin-top: 0.5rem;
+}
+
+#annotate-stem {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.45rem;
+  border-radius: 6px;
+  border: 1px solid #3d4f66;
+  background: #0f1419;
+  color: inherit;
+}

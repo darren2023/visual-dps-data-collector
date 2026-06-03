@@ -182,7 +182,8 @@ def collect_from_video(
                 ann_cfg = load_annotation_config(ann_path)
                 annotation_meta = {
                     "source_file": ann_path.name,
-                    "annotation_size": ann_cfg.get("annotation_size"),
+                    "annotation_size": {"width": infer_w_init, "height": infer_h_init},
+                    "source_annotation_size": ann_cfg.get("annotation_size"),
                     "source_info": ann_cfg.get("source_info"),
                     "shelves": ann_cfg.get("shelves"),
                     "grid_shape": ann_cfg.get("grid_shape"),

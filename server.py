@@ -20,6 +20,15 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from annotation_store import (
+    annotation_path_for_video_stem,
+    load_annotation_for_collect,
+    load_annotation_json,
+    normalize_annotation_payload,
+    resolve_video_stem_from_record,
+    save_annotation_json,
+    validate_annotation_payload,
+)
 from collect_core import run_collect_job, validate_video_path
 from config_loader import (
     build_settings,
@@ -34,6 +43,7 @@ from config_loader import (
     variant_to_backend,
 )
 from model_assets import VIDEO_EXTENSIONS
+from video_frame import first_frame_base64
 
 app = FastAPI(title="visual-dps-datacollect", version="0.2.0")
 
@@ -84,16 +94,60 @@ def _record_id_from_pose_path(pose_path: Path) -> str:
     return pose_path.stem
 
 
-def _annotation_path_for_pose(pose_path: Path) -> Path:
-    return pose_path.with_name(f"{pose_path.stem}_annotation.json")
+def _resolve_video_stem_for_pose(pose_path: Path, meta: dict | None = None) -> str:
+    if meta:
+        vs = str(meta.get("video_stem") or "").strip()
+        if vs:
+            return vs
+    sidecar = pose_path.with_suffix(".meta.json")
+    if sidecar.is_file():
+        try:
+            m = json.loads(sidecar.read_text(encoding="utf-8"))
+            vs = str(m.get("video_stem") or "").strip()
+            if vs:
+                return vs
+        except json.JSONDecodeError:
+            pass
+    return pose_path.stem
 
 
-def _save_annotation_copy(src_path: Path, pose_path: Path) -> Path | None:
-    if not src_path.is_file():
-        return None
-    dest = _annotation_path_for_pose(pose_path)
-    shutil.copy2(src_path, dest)
-    return dest
+def _annotation_path_for_video_stem(video_stem: str) -> Path:
+    paths = resolve_app_paths()
+    return annotation_path_for_video_stem(video_stem, annotation_dir=paths.annotation_dir)
+
+
+def _persist_annotation_for_video(
+    payload: dict[str, Any],
+    video_stem: str,
+    *,
+    source_video: str = "",
+    frame_width: int = 0,
+    frame_height: int = 0,
+) -> Path:
+    paths = resolve_app_paths()
+    normalized = normalize_annotation_payload(
+        payload,
+        video_stem=video_stem,
+        source_video=source_video,
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    _, err = validate_annotation_payload(normalized)
+    if err:
+        raise ValueError(err)
+    return save_annotation_json(video_stem, normalized, annotation_dir=paths.annotation_dir)
+
+
+def _annotation_frame_size(payload: dict[str, Any]) -> tuple[int, int]:
+    ann = payload.get("annotation_size")
+    if isinstance(ann, dict):
+        try:
+            w = int(ann.get("width") or 0)
+            h = int(ann.get("height") or 0)
+            return w, h
+        except (TypeError, ValueError):
+            pass
+    return 0, 0
 
 
 def _parse_save_video_flag(raw: Any, *, default: bool) -> bool:
@@ -201,9 +255,10 @@ def _run_job(
             alarm_cooldown_frames=settings.alarm_cooldown_frames,
         )
         record_id = _record_id_from_pose_path(pose_path)
-        saved_annotation: Path | None = None
         if annotation_path and annotation_path.is_file():
-            saved_annotation = _save_annotation_copy(annotation_path, pose_path)
+            saved_annotation = annotation_path
+        else:
+            saved_annotation = None
         saved_video_path: Path | None = None
         if save_video and video_path.is_file():
             try:
@@ -215,6 +270,7 @@ def _run_job(
             "record_id": record_id,
             "job_id": job_id,
             "display_name": video_stem or _display_name_from_pose_file(pose_path.name, backend),
+            "video_stem": video_stem,
             "pose_file": pose_path.name,
             "source_video": source_video_name,
             "backend": backend,
@@ -230,6 +286,7 @@ def _run_job(
         if saved_annotation and saved_annotation.is_file():
             meta["annotation_file"] = saved_annotation.name
             meta["has_annotation"] = True
+            meta["annotation_url"] = f"/api/annotations/by-video/{video_stem}"
             meta["collision_enabled"] = bool(data.get("collision", {}).get("enabled"))
         elif data.get("annotation"):
             meta["has_annotation"] = True
@@ -306,14 +363,25 @@ def list_records() -> list[dict[str, Any]]:
             meta["display_name"] = _display_name_from_pose_file(
                 pose_file.name, str(meta.get("backend") or "")
             )
+        video_stem = resolve_video_stem_from_record(
+            record_id,
+            json_dir=paths.json_dir,
+            pose_path=pose_file,
+            meta=meta,
+        )
+        meta["video_stem"] = video_stem
+        stored_ann = load_annotation_json(video_stem, annotation_dir=paths.annotation_dir)
+        meta["has_stored_annotation"] = stored_ann is not None
+        if stored_ann and not meta.get("has_annotation"):
+            meta["has_annotation"] = True
         meta["pose_label"] = pose_file.name
         vpath = _video_path_for_record(record_id)
-        if vpath and vpath.is_file():
-            meta["has_video"] = True
+        meta["has_video"] = bool(vpath and vpath.is_file())
+        if meta["has_video"]:
             meta["video_file"] = vpath.name
             meta["video_url"] = f"/api/records/{record_id}/video"
         else:
-            meta.setdefault("has_video", False)
+            meta.pop("video_url", None)
         items.append(meta)
     return items[:50]
 
@@ -332,10 +400,166 @@ def get_record_annotation(record_id: str) -> FileResponse:
     pose_path = _json_path_for_record(record_id)
     if not pose_path:
         raise HTTPException(404, "记录不存在")
-    ann_path = _annotation_path_for_pose(pose_path)
+    paths = resolve_app_paths()
+    sidecar = pose_path.with_suffix(".meta.json")
+    meta: dict[str, Any] | None = None
+    if sidecar.is_file():
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = None
+    video_stem = resolve_video_stem_from_record(
+        record_id,
+        json_dir=paths.json_dir,
+        pose_path=pose_path,
+        meta=meta,
+    )
+    ann_path = annotation_path_for_video_stem(video_stem, annotation_dir=paths.annotation_dir)
     if not ann_path.is_file():
-        raise HTTPException(404, "标注 JSON 不存在")
+        legacy = pose_path.with_name(f"{pose_path.stem}_annotation.json")
+        if legacy.is_file():
+            ann_path = legacy
+        else:
+            raise HTTPException(404, "标注 JSON 不存在")
     return FileResponse(ann_path, media_type="application/json")
+
+
+@app.get("/api/records/{record_id}/annotation/frame")
+def get_record_annotation_frame(record_id: str) -> dict[str, Any]:
+    path = _video_path_for_record(record_id)
+    if not path or not path.is_file():
+        raise HTTPException(404, "配套视频不存在，无法提取首帧")
+    try:
+        return first_frame_base64(path)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/annotations/by-video/{video_stem}")
+def get_annotation_by_video(video_stem: str) -> dict[str, Any]:
+    paths = resolve_app_paths()
+    stem = sanitize_file_stem(video_stem)
+    data = load_annotation_json(stem, annotation_dir=paths.annotation_dir)
+    if not data:
+        raise HTTPException(404, "该视频尚无标注")
+    return data
+
+
+@app.get("/api/annotate/options")
+def list_annotate_options() -> list[dict[str, Any]]:
+    """标注页下拉：全部 pose 记录 + 仅存在于 annotations 目录的条目。"""
+    paths = resolve_app_paths()
+    paths.annotation_dir.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    seen_stems: set[str] = set()
+
+    for pose_file in sorted(paths.json_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if pose_file.name.endswith(".meta.json"):
+            continue
+        record_id = pose_file.stem
+        meta: dict[str, Any] = {"record_id": record_id, "pose_file": pose_file.name}
+        sidecar = pose_file.with_suffix(".meta.json")
+        if sidecar.is_file():
+            try:
+                meta.update(json.loads(sidecar.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                pass
+        if not meta.get("display_name"):
+            meta["display_name"] = _display_name_from_pose_file(pose_file.name, str(meta.get("backend") or ""))
+        video_stem = resolve_video_stem_from_record(
+            record_id,
+            json_dir=paths.json_dir,
+            pose_path=pose_file,
+            meta=meta,
+        )
+        seen_stems.add(video_stem)
+        vpath = _video_path_for_record(record_id)
+        has_video = bool(vpath and vpath.is_file())
+        has_ann = load_annotation_json(video_stem, annotation_dir=paths.annotation_dir) is not None
+        items.append({
+            "video_stem": video_stem,
+            "display_name": meta.get("display_name") or video_stem,
+            "record_id": record_id,
+            "pose_file": pose_file.name,
+            "source_video": meta.get("source_video") or "",
+            "has_video": has_video,
+            "has_stored_annotation": has_ann,
+        })
+
+    for ann_path in sorted(paths.annotation_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        stem = ann_path.stem
+        if stem in seen_stems:
+            continue
+        items.append({
+            "video_stem": stem,
+            "display_name": stem,
+            "record_id": "",
+            "pose_file": "",
+            "source_video": "",
+            "has_video": False,
+            "has_stored_annotation": True,
+        })
+
+    return items[:50]
+
+
+@app.put("/api/annotations/by-video/{video_stem}")
+async def put_annotation_by_video(video_stem: str, body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体须为 JSON 对象")
+    stem = sanitize_file_stem(video_stem)
+    fw, fh = _annotation_frame_size(body)
+    try:
+        path = _persist_annotation_for_video(
+            body, stem, frame_width=fw, frame_height=fh
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    boxes, _ = validate_annotation_payload(body)
+    return {
+        "status": "ok",
+        "video_stem": stem,
+        "path": str(path),
+        "box_count": len(boxes),
+    }
+
+
+@app.post("/api/annotations/by-video/{video_stem}/upload")
+async def upload_annotation_by_video(
+    video_stem: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    if not file.filename:
+        raise HTTPException(400, "未选择文件")
+    if Path(file.filename).suffix.lower() != ".json":
+        raise HTTPException(400, "标注文件须为 .json")
+    try:
+        raw = await file.read()
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, f"无效 JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(400, "标注 JSON 须为对象")
+    stem = sanitize_file_stem(video_stem)
+    fw, fh = _annotation_frame_size(data)
+    try:
+        path = _persist_annotation_for_video(
+            data,
+            stem,
+            source_video=file.filename,
+            frame_width=fw,
+            frame_height=fh,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    boxes, _ = validate_annotation_payload(data)
+    return {
+        "status": "ok",
+        "video_stem": stem,
+        "path": str(path),
+        "box_count": len(boxes),
+        "message": "已覆盖保存（每个视频仅保留最新一份标注）",
+    }
 
 
 @app.post("/api/annotation/validate")
@@ -348,14 +572,16 @@ async def validate_annotation(file: UploadFile = File(...)) -> dict[str, Any]:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, f"无效 JSON: {exc}") from exc
-    from event_engine.annotation_boxes import flatten_annotation_boxes
-
-    boxes = flatten_annotation_boxes(data if isinstance(data, dict) else {})
+    if not isinstance(data, dict):
+        raise HTTPException(400, "标注 JSON 须为对象")
+    boxes, err = validate_annotation_payload(data)
+    if err:
+        raise HTTPException(400, err)
     return {
         "status": "ok",
         "box_count": len(boxes),
-        "has_shelves": isinstance(data, dict) and isinstance(data.get("shelves"), list),
-        "annotation_size": data.get("annotation_size") if isinstance(data, dict) else None,
+        "has_shelves": isinstance(data.get("shelves"), list),
+        "annotation_size": data.get("annotation_size"),
     }
 
 
@@ -448,28 +674,28 @@ async def collect_video(
     )
 
     annotation_path: Path | None = None
+    upload_ann_path: Path | None = None
     if annotation and annotation.filename:
         ann_suffix = Path(annotation.filename).suffix.lower()
         if ann_suffix != ".json":
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(400, "标注文件须为 .json")
-        paths.annotation_dir.mkdir(parents=True, exist_ok=True)
-        annotation_path = tmp_dir / f"annotation{ann_suffix}"
-        with open(annotation_path, "wb") as out:
+        upload_ann_path = tmp_dir / f"annotation{ann_suffix}"
+        with open(upload_ann_path, "wb") as out:
             shutil.copyfileobj(annotation.file, out)
-        try:
-            from event_engine.annotation_boxes import flatten_annotation_boxes, load_annotation_config
 
-            ann_data = load_annotation_config(annotation_path)
-            if not flatten_annotation_boxes(ann_data):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                raise HTTPException(400, "标注 JSON 无有效 boxes/shelves")
-        except FileNotFoundError as exc:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise HTTPException(400, str(exc)) from exc
-        except ValueError as exc:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise HTTPException(400, str(exc)) from exc
+    try:
+        annotation_path = load_annotation_for_collect(
+            video_stem,
+            annotation_dir=paths.annotation_dir,
+            upload_path=upload_ann_path,
+        )
+    except ValueError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(400, str(exc)) from exc
 
     with _jobs_lock:
         _jobs[job_id] = {
@@ -509,6 +735,8 @@ async def collect_video(
         "pose_file": pose_path.name,
         "save_video": save_video_flag,
         "has_annotation": annotation_path is not None,
+        "video_stem": video_stem,
+        "annotation_auto": annotation_path is not None and upload_ann_path is None,
     }
 
 
@@ -591,6 +819,7 @@ def main() -> None:
     print(f"📦 ONNX 目录: {paths.models_onnx_dir}")
     print(f"   ├─ detection: {paths.models_detection_dir}")
     print(f"   └─ pose: {paths.models_pose_dir}")
+    print(f"🏷 标注目录: {paths.annotation_dir}（每视频一份，新保存覆盖旧文件）")
     print(f"🧠 推理设备: {settings.device}（models.use_gpu / INFERENCE_USE_GPU）")
     if settings.device == "cuda":
         try:

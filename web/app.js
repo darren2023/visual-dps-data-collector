@@ -7,10 +7,11 @@ const SCORE_MIN = 0.3;
 
 const $ = (sel) => document.querySelector(sel);
 const tabs = document.querySelectorAll(".tab");
-const panels = { collect: $("#panel-collect"), playback: $("#panel-playback") };
+const panels = { collect: $("#panel-collect"), annotate: $("#panel-annotate"), playback: $("#panel-playback") };
 
 let poseData = null;
 let annotationBoxes = [];
+let annotationSize = null;
 let frameByTime = [];
 let rafId = null;
 let playbackId = null;
@@ -79,6 +80,81 @@ async function cleanupPlaybackVideo() {
   }
 }
 
+// --- 标注页历史记录下拉（与采集区同源 /api/records） ---
+async function loadAnnotateRecordSelect() {
+  const sel = document.getElementById("annotate-record");
+  if (!sel) return;
+
+  sel.innerHTML = '<option value="">— 选择历史记录 —</option>';
+
+  let items = [];
+  try {
+    const optRes = await fetch("/api/annotate/options");
+    if (optRes.ok) {
+      const data = await optRes.json();
+      if (Array.isArray(data)) items = data;
+    }
+  } catch {
+    /* 回退 records */
+  }
+
+  if (!items.length) {
+    try {
+      const res = await fetch("/api/records");
+      if (!res.ok) throw new Error(await res.text());
+      const records = await res.json();
+      if (Array.isArray(records)) {
+        items = records.map((r) => ({
+          video_stem: r.video_stem || r.display_name || r.record_id,
+          display_name: r.display_name || r.record_id,
+          record_id: r.record_id || "",
+          pose_file: r.pose_file || r.pose_label || "",
+          source_video: r.source_video || "",
+          has_video: !!r.has_video,
+          has_stored_annotation: !!(r.has_stored_annotation || r.has_annotation),
+        }));
+      }
+    } catch (err) {
+      sel.innerHTML = '<option value="">无法加载记录</option>';
+      const status = document.getElementById("annotate-status");
+      if (status) {
+        status.classList.remove("hidden", "error");
+        status.classList.add("error");
+        status.textContent = `加载历史记录失败: ${err.message}`;
+      }
+      return;
+    }
+  }
+
+  if (!items.length) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.disabled = true;
+    empty.textContent = "暂无记录（可先采集或上传本地视频标注）";
+    sel.appendChild(empty);
+    return;
+  }
+
+  items.forEach((s) => {
+    const opt = document.createElement("option");
+    const stem = s.video_stem || s.display_name || "";
+    opt.value = s.record_id ? s.record_id : `stem:${stem}`;
+    const tags = [];
+    if (s.has_stored_annotation) tags.push("有标注");
+    if (s.has_video) tags.push("有视频");
+    else tags.push("无视频");
+    const jsonHint = s.pose_file ? ` · ${s.pose_file}` : "";
+    opt.textContent = `${s.display_name || stem}${jsonHint}${tags.length ? ` · ${tags.join(" · ")}` : ""}`;
+    opt.dataset.videoStem = stem;
+    opt.dataset.sourceVideo = s.source_video || "";
+    opt.dataset.hasVideo = s.has_video ? "1" : "0";
+    opt.dataset.recordId = s.record_id || "";
+    sel.appendChild(opt);
+  });
+}
+
+window.loadRecordsForAnnotate = loadAnnotateRecordSelect;
+
 // --- 标签页 ---
 tabs.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -92,6 +168,7 @@ tabs.forEach((btn) => {
     Object.values(panels).forEach((p) => p.classList.remove("active"));
     panels[btn.dataset.tab].classList.add("active");
     if (btn.dataset.tab === "collect") loadRecords();
+    if (btn.dataset.tab === "annotate") loadAnnotateRecordSelect();
   });
 });
 
@@ -158,8 +235,10 @@ collectForm.addEventListener("submit", async (e) => {
     const rid = job.record_id || body.record_id || job.job_id;
     collectResult.classList.remove("hidden");
     const hasVideo = job.has_video || savingVideo;
+    const hasAnn = job.has_annotation || body.has_annotation;
+    const annNote = body.annotation_auto ? " · 已自动关联已存标注" : hasAnn ? " · 含碰撞检测" : "";
     collectResult.innerHTML = `
-      <p>✅ 已保存至 <code>localdata/json</code>${hasVideo ? " 与 <code>localdata/video</code>" : ""}${job.has_annotation ? " · 含碰撞检测" : ""}，共 <strong>${job.frame_count ?? "?"}</strong> 帧</p>
+      <p>✅ 已保存至 <code>localdata/json</code>${hasVideo ? " 与 <code>localdata/video</code>" : ""}${annNote}，共 <strong>${job.frame_count ?? "?"}</strong> 帧</p>
       <p>
         <a href="${job.pose_url}" download>下载 JSON</a>
         · <button type="button" class="primary-link" data-replay="${rid}" data-has-video="${hasVideo ? "1" : "0"}">回放</button>
@@ -203,10 +282,11 @@ async function loadRecords() {
           <strong class="record-name">${name}</strong>
           <span class="record-tag">骨架 JSON</span>
           <code class="record-json">${jsonFile}</code>
-          <span class="record-meta">${s.backend || "?"}${s.det_backend ? ` · ${s.det_backend}` : ""} · ${s.frame_count ?? "?"} 帧${s.has_video ? ' · <span class="record-badge">有视频</span>' : ""}${s.collision_enabled ? ' · <span class="record-badge">碰撞</span>' : ""}</span>
+          <span class="record-meta">${s.backend || "?"}${s.det_backend ? ` · ${s.det_backend}` : ""} · ${s.frame_count ?? "?"} 帧${s.has_video ? ' · <span class="record-badge">有视频</span>' : ""}${s.has_stored_annotation || s.collision_enabled ? ' · <span class="record-badge">标注</span>' : ""}${s.collision_enabled ? ' · <span class="record-badge">碰撞</span>' : ""}</span>
         </div>
         <span class="record-actions">
           <a href="${s.pose_url}" download title="${jsonFile}">下载</a>
+          ${s.has_video ? `<button type="button" data-annotate="${s.record_id}" data-stem="${s.video_stem || name}">标注</button>` : ""}
           <button type="button" data-replay="${s.record_id}" data-name="${name}" data-json="${jsonFile}" data-has-video="${s.has_video ? "1" : "0"}">回放</button>
         </span>
       </li>`;
@@ -223,6 +303,13 @@ async function loadRecords() {
           );
         } catch (err) {
           setPlaybackInfo(`❌ ${err.message}`);
+        }
+      });
+    });
+    list.querySelectorAll("[data-annotate]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (typeof window.openAnnotateForRecord === "function") {
+          window.openAnnotateForRecord(btn.dataset.annotate, btn.dataset.stem);
         }
       });
     });
@@ -278,7 +365,7 @@ async function startVideoPlayback(hintPrefix = "") {
 
 async function openRecordReplay(recordId, displayName = "", jsonFileName = "", expectVideo = false) {
   tabs.forEach((b) => b.classList.toggle("active", b.dataset.tab === "playback"));
-  panels.collect.classList.remove("active");
+  Object.values(panels).forEach((p) => p.classList.remove("active"));
   panels.playback.classList.add("active");
   await cleanupPlaybackVideo();
   clearVideoElement();
@@ -286,6 +373,16 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   if (!poseRes.ok) throw new Error("无法加载骨架 JSON");
   poseData = await poseRes.json();
   buildFrameIndex();
+  if (!annotationBoxes.length) {
+    try {
+      const annRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/annotation.json`);
+      if (annRes.ok) {
+        loadAnnotationBoxesFromData(await annRes.json());
+      }
+    } catch {
+      /* 无独立标注文件时忽略 */
+    }
+  }
   $("#playback-video").value = "";
   const label = displayName || recordId;
   const jsonFile = jsonFileName || `${recordId}.json`;
@@ -340,16 +437,51 @@ function boxCollisionToken(box) {
   return shelf ? `${shelf}:${id}` : `Box_${id}`;
 }
 
-function syncAnnotationBoxesFromPose() {
-  annotationBoxes = Array.isArray(poseData?.annotation?.boxes) ? poseData.annotation.boxes : [];
+function getEffectiveAnnotationSize() {
+  const { frameW, frameH } = getVideoFrameSize();
+  let size = annotationSize;
+  if (!size?.width || !size?.height) {
+    if (frameByTime.length) {
+      size = { width: frameByTime[0].w, height: frameByTime[0].h };
+    } else {
+      size = { width: frameW, height: frameH };
+    }
+  }
+  // 旧版 pose JSON：boxes 已缩放到推理分辨率，但 annotation_size 仍是原始标注尺寸
+  if (frameByTime.length && annotationBoxes.length && size?.width && size?.height) {
+    const f0 = frameByTime[0];
+    let maxX = 0;
+    let maxY = 0;
+    annotationBoxes.forEach((box) => {
+      (box.video_polygon || []).forEach((pt) => {
+        maxX = Math.max(maxX, Number(pt[0]) || 0);
+        maxY = Math.max(maxY, Number(pt[1]) || 0);
+      });
+    });
+    if (
+      maxX <= f0.w * 1.05 &&
+      maxY <= f0.h * 1.05 &&
+      (size.width > f0.w * 1.15 || size.height > f0.h * 1.15)
+    ) {
+      return { width: f0.w, height: f0.h };
+    }
+  }
+  return size;
 }
 
-async function loadAnnotationBoxesFromFile(file) {
-  const data = JSON.parse(await file.text());
+function syncAnnotationBoxesFromPose() {
+  const ann = poseData?.annotation;
+  annotationBoxes = Array.isArray(ann?.boxes) ? ann.boxes : [];
+  annotationSize = ann?.annotation_size || null;
+}
+
+function loadAnnotationBoxesFromData(data) {
   if (Array.isArray(data?.annotation?.boxes)) {
     annotationBoxes = data.annotation.boxes;
+    annotationSize = data.annotation.annotation_size || data.annotation_size || null;
     return;
   }
+  annotationSize = data?.annotation_size || null;
   if (Array.isArray(data?.boxes)) {
     annotationBoxes = data.boxes;
     return;
@@ -365,6 +497,11 @@ async function loadAnnotationBoxesFromFile(file) {
     return;
   }
   annotationBoxes = [];
+}
+
+async function loadAnnotationBoxesFromFile(file) {
+  const data = JSON.parse(await file.text());
+  loadAnnotationBoxesFromData(data);
 }
 
 function buildFrameIndex() {
@@ -404,25 +541,38 @@ function syncCanvasSize() {
   return { cw: cssW, ch: cssH };
 }
 
-function drawAnnotationBoxes(frame, inferW, inferH) {
+function drawAnnotationBoxes(frame) {
   if (!annotationBoxes.length) return;
+  const pl = window.previewLayout;
+  if (!pl?.resolvePolygonFramePoints || !pl?.mapPointToDisplay) return;
+
+  const { frameW, frameH } = getVideoFrameSize();
   const layout = getDisplayLayout();
+  const annSize = getEffectiveAnnotationSize();
   const collisionSet = new Set(frame?.collisions || []);
   const alarmSet = new Set(frame?.alarm_collisions || []);
 
   annotationBoxes.forEach((box) => {
     const poly = box.video_polygon;
     if (!Array.isArray(poly) || poly.length < 3) return;
+    const framePts = pl.resolvePolygonFramePoints(
+      poly,
+      box.video_polygon_norm,
+      annSize,
+      frameW,
+      frameH
+    );
+    if (framePts.length < 3) return;
     const token = boxCollisionToken(box);
     const isAlarm = alarmSet.has(token);
     const isHit = collisionSet.has(token);
     ctx.strokeStyle = isAlarm ? "rgba(255, 71, 87, 0.95)" : isHit ? "rgba(255, 209, 102, 0.95)" : "rgba(0, 255, 0, 0.35)";
     ctx.lineWidth = isAlarm || isHit ? 2.5 : 1.5;
     ctx.beginPath();
-    poly.forEach((pt, i) => {
-      const [x, y] = mapInferToDisplay(pt[0], pt[1], inferW, inferH, layout);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    framePts.forEach(([x, y], i) => {
+      const [dx, dy] = pl.mapPointToDisplay(x, y, layout);
+      if (i === 0) ctx.moveTo(dx, dy);
+      else ctx.lineTo(dx, dy);
     });
     ctx.closePath();
     ctx.stroke();
@@ -432,7 +582,7 @@ function drawAnnotationBoxes(frame, inferW, inferH) {
 function drawSkeleton(frame, inferW, inferH) {
   const { cw, ch } = syncCanvasSize();
   ctx.clearRect(0, 0, cw, ch);
-  drawAnnotationBoxes(frame, inferW, inferH);
+  drawAnnotationBoxes(frame);
   if (!frame?.persons?.length) return;
 
   const layout = getDisplayLayout();
@@ -661,3 +811,4 @@ seekBar.addEventListener("input", () => {
 });
 
 loadRecords();
+loadAnnotateRecordSelect();

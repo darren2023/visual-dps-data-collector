@@ -14,6 +14,7 @@
 
   <nav class="tabs">
     <button type="button" class="tab active" data-tab="collect">采集</button>
+    <button type="button" class="tab" data-tab="annotate">标注</button>
     <button type="button" class="tab" data-tab="playback">回放</button>
   </nav>
 
@@ -64,7 +65,7 @@
         <label>标注 JSON（可选，visual-dps / box_human_det 格式）
           <input type="file" id="collect-annotation" accept=".json,application/json" />
         </label>
-        <p class="hint field-hint">上传货位标注后启用碰撞检测（手腕点 vs 货框，逻辑与 visual-dps event-worker 一致）。格式见 README。</p>
+        <p class="hint field-hint">每个视频仅保留<strong>一份</strong>标注（按视频主名绑定）。上传 JSON 或在「标注」页保存会<strong>覆盖</strong>旧文件；采集时若未上传则自动使用已存标注。启用碰撞检测（手腕 vs 货框）。</p>
         <button type="submit" id="collect-btn">开始采集</button>
       </form>
       <div id="collect-status" class="status hidden"></div>
@@ -72,6 +73,41 @@
 
       <h2>历史记录（JSON + 视频）</h2>
       <ul id="session-list" class="session-list"></ul>
+    </section>
+
+    <section id="panel-annotate" class="panel">
+      <div class="card">
+        <p class="hint">在视频首帧上标定货架透视网格，保存为 visual-dps 兼容 JSON。同一 <code>video_stem</code> 仅保留最新一份标注。</p>
+        <div class="row">
+          <label>历史记录
+            <select id="annotate-record">
+              <option value="">— 选择历史记录 —</option>
+            </select>
+          </label>
+          <label>video_stem（视频主名）
+            <input type="text" id="annotate-stem" placeholder="与视频文件名主名一致" />
+          </label>
+        </div>
+        <div class="annotate-actions">
+          <button type="button" id="annotate-load-record">加载记录首帧</button>
+          <label class="inline-file">本地视频<input type="file" id="annotate-video" accept="video/*" /></label>
+          <label class="inline-file">上传 JSON 覆盖<input type="file" id="annotate-json-upload" accept=".json,application/json" /></label>
+        </div>
+        <div class="row annotate-grid-size">
+          <label>网格行数<input type="number" id="annotate-rows" value="4" min="1" max="20" /></label>
+          <label>网格列数<input type="number" id="annotate-cols" value="4" min="1" max="20" /></label>
+        </div>
+        <div class="annotate-actions">
+          <button type="button" id="annotate-save" class="primary-btn">保存标注（覆盖）</button>
+          <button type="button" id="annotate-restart">重新网格标注</button>
+          <button type="button" id="annotate-download">下载当前 JSON</button>
+        </div>
+      </div>
+      <div id="annotate-status" class="status hidden"></div>
+      <div class="annotate-stage">
+        <canvas id="annotate-canvas" class="hidden"></canvas>
+        <p class="hint annotate-hint">步骤：① 加载视频首帧 → ② 依次点击 4 个角点 → ③ 拖拽黄线对齐货框 → ④ 保存</p>
+      </div>
     </section>
 
     <section id="panel-playback" class="panel">
@@ -97,6 +133,9 @@
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="previewLayout.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
+  <script src="app.js?v=3"></script>
+  <script src="annotate.js?v=3"></script>
 </body>
 </html>
