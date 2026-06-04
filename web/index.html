@@ -21,11 +21,25 @@
   <main>
     <section id="panel-collect" class="panel active">
       <form id="collect-form" class="card">
-        <label>
+        <div class="collect-mode-row">
+          <span class="label-with-tip">采集模式
+            <button type="button" class="field-tip" data-tip="单视频：一次处理一个文件。文件夹批处理：上传同一机位文件夹内全部视频，仅首帧预览，结果保存到 localdata/json/{机位目录}/ 与 localdata/video/{机位目录}/。">?</button>
+          </span>
+          <label class="collect-mode-option"><input type="radio" name="collect-mode" value="single" checked /> 单视频</label>
+          <label class="collect-mode-option"><input type="radio" name="collect-mode" value="batch" /> 文件夹批处理</label>
+        </div>
+        <label id="collect-file-wrap">
           <span class="label-with-tip">视频文件
             <button type="button" class="field-tip" data-tip="选择待采集的源视频，将按下方推理参数提取人体骨架并写入 JSON。">?</button>
           </span>
-          <input type="file" id="collect-file" accept="video/*" required />
+          <input type="file" id="collect-file" accept="video/*" />
+        </label>
+        <label id="collect-folder-wrap" class="hidden">
+          <span class="label-with-tip">视频文件夹（同一机位）
+            <button type="button" class="field-tip" data-tip="选择包含多个视频的文件夹（如 1-6组-2）。仅对第一个视频展示首帧预览；批处理结果写入该机位对应子目录（如 1-6-2）。">?</button>
+          </span>
+          <input type="file" id="collect-folder" webkitdirectory directory multiple accept="video/*" />
+          <p id="collect-folder-summary" class="hint hidden"></p>
         </label>
         <div class="row">
           <label>
@@ -91,15 +105,16 @@
           </span>
         </label>
         <label class="field-block">
-          <span class="label-with-tip">机位标识（与画面右下角一致，如 2-1组-3）
-            <button type="button" class="field-tip" data-tip="手动输入视频画面上的机位文字，须与仓库根目录 reflection.json 中 camera 字段一致。将按 reflection 装配 localdata/json/annotations/{编号}.json。也可上传标注 JSON 或使用标注页按视频主名保存。">?</button>
+          <span class="label-with-tip">机位标识（与画面右下角一致）
+            <button type="button" class="field-tip" data-tip="从 reflection.json 的 camera 列表中选择，须与视频画面右下角机位文字一致。将按 reflection 装配 annotations/{编号}.json。也可上传标注 JSON。">?</button>
           </span>
-          <input type="text" id="collect-camera-label" list="collect-camera-datalist" placeholder="例如 2-1组-3" autocomplete="off" />
-          <datalist id="collect-camera-datalist"></datalist>
+          <select id="collect-camera-label">
+            <option value="">— 请选择机位 —</option>
+          </select>
         </label>
         <p id="collect-camera-status" class="annotation-status hint hidden" role="status"></p>
         <div id="collect-preview-wrap" class="collect-preview-wrap hidden">
-          <p class="hint collect-preview-hint">视频首帧预览（对照画面右下角机位标识填写上方输入框）</p>
+          <p class="hint collect-preview-hint">视频首帧预览（对照画面右下角机位标识选择上方下拉项）</p>
           <div class="collect-preview-stage">
             <video id="collect-preview-video" class="collect-preview-video" playsinline muted preload="metadata"></video>
           </div>
@@ -131,6 +146,7 @@
           </div>
         </fieldset>
         <button type="submit" id="collect-btn">开始采集</button>
+        <button type="button" id="collect-batch-btn" class="primary-btn hidden">开始批处理</button>
       </form>
       <div id="collect-status" class="status hidden"></div>
       <div id="collect-result" class="card hidden"></div>
@@ -289,7 +305,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
   <script src="annotateGeometry.js"></script>
   <script src="annotateVisualMode.js"></script>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=25"></script>
   <script src="annotate.js?v=10"></script>
 </body>
 </html>

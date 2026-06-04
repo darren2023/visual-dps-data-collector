@@ -161,6 +161,12 @@ button:disabled {
   overflow: hidden;
 }
 
+.progress-pct {
+  margin-top: 0.25rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .progress > i {
   display: block;
   height: 100%;
@@ -438,6 +444,41 @@ h2 {
 
 .annotation-status.is-error {
   color: #fca5a5;
+}
+
+.collect-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.collect-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.record-group {
+  margin: 1rem 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.06);
+  border-radius: 0 8px 8px 0;
+}
+
+.record-group-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  color: #93c5fd;
+}
+
+.record-group .session-list {
+  margin: 0;
+  padding: 0;
 }
 
 .collect-preview-wrap {

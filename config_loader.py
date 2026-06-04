@@ -209,12 +209,26 @@ def default_save_video(cfg: dict[str, Any] | None = None) -> bool:
     return _pick_bool(None, storage.get("save_video"), True)
 
 
-def record_video_path(paths: AppPaths, pose_record_path: Path, suffix: str) -> Path:
-    """与 pose 记录同名的配套视频路径（支持目录或 .json 路径）。"""
+def record_video_path(
+    paths: AppPaths,
+    pose_record_path: Path,
+    suffix: str,
+    *,
+    camera_slug: str | None = None,
+) -> Path:
+    """与 pose 记录同名的配套视频路径（支持机位子目录）。"""
     ext = suffix if suffix.startswith(".") else f".{suffix}"
-    paths.video_dir.mkdir(parents=True, exist_ok=True)
     stem = pose_record_path.stem if pose_record_path.is_file() else pose_record_path.name
-    return paths.video_dir / f"{stem}{ext}"
+    slug = camera_slug
+    if not slug:
+        try:
+            rel = pose_record_path.resolve().parent.relative_to(paths.json_dir.resolve())
+            if rel.parts and str(rel) != ".":
+                slug = rel.parts[0]
+        except ValueError:
+            slug = None
+    base = video_bucket_dir(paths, slug)
+    return base / f"{stem}{ext}"
 
 
 @dataclass
@@ -248,21 +262,66 @@ def sanitize_file_stem(name: str) -> str:
     return safe.strip("._") or "video"
 
 
+def camera_storage_slug(camera_label: str) -> str:
+    """机位标识 → 存储目录名，如 1-6组-2 → 1-6-2。"""
+    s = str(camera_label or "").strip()
+    s = s.replace("－", "-").replace("—", "-").replace(" ", "")
+    s = s.replace("组", "-")
+    s = re.sub(r"[^\w.\-]+", "-", s, flags=re.UNICODE)
+    s = re.sub(r"-+", "-", s).strip(".-")
+    return s or "camera"
+
+
+def json_bucket_dir(paths: AppPaths, camera_slug: str | None) -> Path:
+    """骨架数据根目录；有机位时落在 json_dir/{camera_slug}/。"""
+    if camera_slug:
+        d = paths.json_dir / camera_slug
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    paths.json_dir.mkdir(parents=True, exist_ok=True)
+    return paths.json_dir
+
+
+def video_bucket_dir(paths: AppPaths, camera_slug: str | None) -> Path:
+    if camera_slug:
+        d = paths.video_dir / camera_slug
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    paths.video_dir.mkdir(parents=True, exist_ok=True)
+    return paths.video_dir
+
+
+def record_id_for_pose_path(json_dir: Path, pose_path: Path) -> str:
+    """相对 json_dir 的记录 ID，含机位子目录时形如 1-6-2/foo_rtmpose_t。"""
+    jp = json_dir.resolve()
+    pp = pose_path.resolve()
+    if pp.is_file():
+        pp = pp.parent
+    try:
+        rel = pp.relative_to(jp)
+        if str(rel) == ".":
+            return pp.name
+        return rel.as_posix()
+    except ValueError:
+        return pp.name
+
+
 def default_pose_record_path(
     paths: AppPaths,
     *,
     backend: str,
     video_stem: str | None = None,
     job_id: str | None = None,
+    camera_slug: str | None = None,
 ) -> Path:
-    """记录目录命名：{视频主名}_{backend}/（schema v2 Parquet 包）。"""
-    paths.json_dir.mkdir(parents=True, exist_ok=True)
+    """记录目录命名：{机位目录/}{视频主名}_{backend}/（schema v2 Parquet 包）。"""
+    base = json_bucket_dir(paths, camera_slug)
     prefix = sanitize_file_stem(video_stem) if video_stem else "video"
     safe_backend = re.sub(r"[^\w.-]", "_", backend)
-    candidate = paths.json_dir / f"{prefix}_{safe_backend}"
+    candidate = base / f"{prefix}_{safe_backend}"
     if candidate.is_dir() or candidate.with_suffix(".json").is_file():
         suffix = (job_id or time.strftime("%H%M%S"))[:12]
-        candidate = paths.json_dir / f"{prefix}_{safe_backend}_{suffix}"
+        candidate = base / f"{prefix}_{safe_backend}_{suffix}"
     return candidate
 
 
@@ -272,6 +331,7 @@ def default_pose_json_path(
     backend: str,
     video_stem: str | None = None,
     job_id: str | None = None,
+    camera_slug: str | None = None,
 ) -> Path:
     """兼容旧名：新采集默认返回 Parquet 包目录。"""
     return default_pose_record_path(
@@ -279,6 +339,7 @@ def default_pose_json_path(
         backend=backend,
         video_stem=video_stem,
         job_id=job_id,
+        camera_slug=camera_slug,
     )
 
 

@@ -352,8 +352,51 @@ const collectForm = $("#collect-form");
 const collectStatus = $("#collect-status");
 const collectResult = $("#collect-result");
 const collectBtn = $("#collect-btn");
+const collectBatchBtn = $("#collect-batch-btn");
 const collectAnnotationStatus = $("#collect-annotation-status");
 const collectCameraStatus = $("#collect-camera-status");
+
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|avi|mkv|m4v)$/i;
+
+function isCollectBatchMode() {
+  return document.querySelector('input[name="collect-mode"]:checked')?.value === "batch";
+}
+
+function setCollectModeUi() {
+  const batch = isCollectBatchMode();
+  $("#collect-file-wrap")?.classList.toggle("hidden", batch);
+  $("#collect-folder-wrap")?.classList.toggle("hidden", !batch);
+  collectBtn?.classList.toggle("hidden", batch);
+  collectBatchBtn?.classList.toggle("hidden", !batch);
+  if (!batch) {
+    $("#collect-folder-summary")?.classList.add("hidden");
+  }
+}
+
+function filterVideoFilesFromList(fileList) {
+  return Array.from(fileList || [])
+    .filter((f) => VIDEO_EXT_RE.test(f.name || ""))
+    .sort((a, b) =>
+      String(a.webkitRelativePath || a.name || "").localeCompare(
+        String(b.webkitRelativePath || b.name || ""),
+        undefined,
+        { numeric: true }
+      )
+    );
+}
+
+function folderNameFromFileList(files) {
+  const f = files[0];
+  if (!f) return "";
+  const rel = String(f.webkitRelativePath || f.name || "");
+  const parts = rel.split(/[/\\]/).filter(Boolean);
+  return parts.length >= 2 ? parts[0] : "";
+}
+
+function recordApiUrl(recordId, suffix = "") {
+  const base = `/api/records/${encodeURIComponent(recordId)}`;
+  return suffix ? `${base}${suffix.startsWith("/") ? suffix : `/${suffix}`}` : base;
+}
 
 function setCollectCameraStatus(html, className = "") {
   if (!collectCameraStatus) return;
@@ -367,14 +410,64 @@ function setCollectCameraStatus(html, className = "") {
   collectCameraStatus.innerHTML = html;
 }
 
+function escapeHtmlAttr(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;");
+}
+
+/** 机位目录名与下拉项粗匹配（如文件夹 1-6组-2 对应选项 1-6组-2） */
+function normalizeCameraMatchKey(s) {
+  return String(s || "")
+    .trim()
+    .replace(/－|—/g, "-")
+    .replace(/\s+/g, "")
+    .replace(/组/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase();
+}
+
+function getCollectCameraLabel() {
+  return $("#collect-camera-label")?.value?.trim() || "";
+}
+
+function setCollectCameraLabel(value) {
+  const sel = $("#collect-camera-label");
+  if (!sel) return;
+  const v = String(value || "").trim();
+  if (!v) {
+    sel.value = "";
+    return;
+  }
+  for (const opt of sel.options) {
+    if (opt.value === v) {
+      sel.value = v;
+      return;
+    }
+  }
+  const key = normalizeCameraMatchKey(v);
+  for (const opt of sel.options) {
+    if (opt.value && normalizeCameraMatchKey(opt.value) === key) {
+      sel.value = opt.value;
+      return;
+    }
+  }
+}
+
 async function loadReflectionCameras() {
-  const datalist = $("#collect-camera-datalist");
+  const sel = $("#collect-camera-label");
+  if (!sel) return;
   try {
     const res = await fetch("/api/reflection/cameras");
     if (!res.ok) return;
     const body = await res.json();
-    if (!datalist || !Array.isArray(body.cameras)) return;
-    datalist.innerHTML = body.cameras.map((c) => `<option value="${String(c).replace(/"/g, "&quot;")}"></option>`).join("");
+    if (!Array.isArray(body.cameras)) return;
+    const opts = body.cameras
+      .map((c) => `<option value="${escapeHtmlAttr(c)}">${escapeHtmlAttr(c)}</option>`)
+      .join("");
+    const prev = sel.value;
+    sel.innerHTML = `<option value="">— 请选择机位 —</option>${opts}`;
+    if (prev) setCollectCameraLabel(prev);
   } catch {
     /* ignore */
   }
@@ -424,9 +517,18 @@ function openAnnotateForVideoStem(stem) {
   if (typeof window.initAnnotatePanel === "function") window.initAnnotatePanel();
 }
 
+async function resolveCollectAnnotationForBatch() {
+  const camera = getCollectCameraLabel();
+  if (!camera) return { ok: false, message: "请选择机位标识（reflection.json 中的 camera）" };
+  const lookup = await lookupCollectCameraLabel(camera);
+  if (!lookup.ok) return { ok: false, message: lookup.message || "机位标识无效" };
+  return { ok: true, source: "camera", camera: lookup.camera || camera };
+}
+
 async function resolveCollectAnnotationSource(file, annFile) {
+  if (isCollectBatchMode()) return resolveCollectAnnotationForBatch();
   if (annFile) return { ok: true, source: "upload" };
-  const camera = $("#collect-camera-label")?.value?.trim();
+  const camera = getCollectCameraLabel();
   if (camera) {
     const lookup = await lookupCollectCameraLabel(camera);
     if (lookup.ok) return { ok: true, source: "camera", camera: lookup.camera };
@@ -451,8 +553,18 @@ async function resolveCollectAnnotationSource(file, annFile) {
 
 async function refreshCollectAnnotationHint() {
   if (!collectAnnotationStatus) return;
-  const file = $("#collect-file")?.files?.[0];
   const annFile = $("#collect-annotation")?.files?.[0];
+  if (isCollectBatchMode()) {
+    collectAnnotationStatus.classList.remove("hidden");
+    const check = await resolveCollectAnnotationForBatch();
+    if (check.ok) {
+      collectAnnotationStatus.innerHTML = `✅ 批处理将使用机位 <strong>${check.camera}</strong> 的 reflection 标注。`;
+      return;
+    }
+    collectAnnotationStatus.innerHTML = `⚠️ ${check.message || "请选择有效机位标识"}`;
+    return;
+  }
+  const file = $("#collect-file")?.files?.[0];
   if (!file) {
     collectAnnotationStatus.classList.add("hidden");
     collectAnnotationStatus.innerHTML = "";
@@ -481,6 +593,14 @@ collectAnnotationStatus?.addEventListener("click", (e) => {
   openAnnotateForVideoStem(btn.dataset.stem || videoStemFromFilename(file?.name));
 });
 
+document.querySelectorAll('input[name="collect-mode"]').forEach((el) => {
+  el.addEventListener("change", () => {
+    setCollectModeUi();
+    void refreshCollectAnnotationHint();
+  });
+});
+setCollectModeUi();
+
 $("#collect-file")?.addEventListener("change", () => {
   const file = $("#collect-file")?.files?.[0];
   if (typeof window.initCollectVideoPreview === "function") {
@@ -489,16 +609,29 @@ $("#collect-file")?.addEventListener("change", () => {
   void refreshCollectAnnotationHint();
 });
 
-let collectCameraLookupTimer = null;
-$("#collect-camera-label")?.addEventListener("input", () => {
-  clearTimeout(collectCameraLookupTimer);
-  collectCameraLookupTimer = setTimeout(() => {
-    void lookupCollectCameraLabel($("#collect-camera-label")?.value);
-    void refreshCollectAnnotationHint();
-  }, 400);
+$("#collect-folder")?.addEventListener("change", () => {
+  const files = filterVideoFilesFromList($("#collect-folder")?.files);
+  const summary = $("#collect-folder-summary");
+  if (!files.length) {
+    summary?.classList.add("hidden");
+    if (typeof window.initCollectVideoPreview === "function") window.initCollectVideoPreview(null);
+    return;
+  }
+  summary?.classList.remove("hidden");
+  summary.textContent = `已选 ${files.length} 个视频（将保存至机位子目录）`;
+  const hint = folderNameFromFileList(files);
+  if (hint && !getCollectCameraLabel()) {
+    setCollectCameraLabel(hint);
+    void lookupCollectCameraLabel(getCollectCameraLabel());
+  }
+  if (typeof window.initCollectVideoPreview === "function") {
+    window.initCollectVideoPreview(files[0]);
+  }
+  void refreshCollectAnnotationHint();
 });
+
 $("#collect-camera-label")?.addEventListener("change", () => {
-  void lookupCollectCameraLabel($("#collect-camera-label")?.value);
+  void lookupCollectCameraLabel(getCollectCameraLabel());
   void refreshCollectAnnotationHint();
 });
 $("#collect-annotation")?.addEventListener("change", () => {
@@ -515,26 +648,122 @@ function hideStatus() {
   collectStatus.classList.add("hidden");
 }
 
+/** 将秒数格式化为可读耗时（用于 ETA / 已用时间） */
+function formatDurationSec(sec) {
+  if (sec == null || Number.isNaN(sec)) return "";
+  const n = Number(sec);
+  if (n > 0 && n < 1) return "不足 1 秒";
+  const s = Math.max(0, Math.round(n));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} 分 ${r} 秒` : `${m} 分`;
+}
+
+function formatProgressPct(pct) {
+  const n = Number(pct);
+  if (Number.isNaN(n)) return "0%";
+  const v = Math.min(100, Math.max(0, n));
+  return Number.isInteger(v) ? `${v}%` : `${v.toFixed(1)}%`;
+}
+
 async function pollJob(jobId) {
   for (;;) {
     const res = await fetch(`/api/jobs/${jobId}`);
     if (!res.ok) throw new Error(await res.text());
     const job = await res.json();
-    const pct = job.progress ?? 0;
+    let pct = Math.min(100, Math.max(0, Number(job.progress ?? 0)));
+    const parts = [];
+
+    if (job.type === "batch") {
+      const cur = job.current_index ?? 0;
+      const tot = job.total_videos ?? "?";
+      const slug = job.camera_slug || job.camera_label || "";
+      let line = `批处理 ${cur}/${tot}`;
+      if (job.current_video) line += ` · <code>${job.current_video}</code>`;
+      if (slug) line += ` · 机位 <code>${slug}</code>`;
+      parts.push(`<div class="hint">${line}</div>`);
+      const timing = [];
+      if (job.elapsed_sec != null) timing.push(`已用 ${formatDurationSec(job.elapsed_sec)}`);
+      if (job.status === "running") {
+        if (job.eta_sec != null && job.eta_sec > 0) {
+          timing.push(`预计剩余 ${formatDurationSec(job.eta_sec)}`);
+        } else if (job.current_frame > 0 && job.frame_total > 0) {
+          timing.push("预计剩余 计算中…");
+        }
+      }
+      if (timing.length) parts.push(`<div class="hint">${timing.join(" · ")}</div>`);
+      if (
+        job.current_frame > 0 &&
+        job.frame_total > 0 &&
+        job.total_videos > 0 &&
+        (pct === 0 || pct < 0.5)
+      ) {
+        const vi = Math.max(0, (job.current_index ?? 1) - 1);
+        const inner = job.current_frame / job.frame_total;
+        pct = Math.min(99.9, ((vi + inner) / job.total_videos) * 100);
+      }
+    }
+
+    if (job.current_frame != null && job.frame_total) {
+      const fp = Math.round((job.current_frame / job.frame_total) * 100);
+      parts.push(
+        `<div class="hint">当前视频帧 ${job.current_frame}/${job.frame_total}（约 ${fp}%）</div>`
+      );
+    }
+
+    const pctLabel = formatProgressPct(pct);
     showStatus(
-      `<div>${job.message || job.status}</div>
-       <div class="progress"><i style="width:${pct}%"></i></div>`
+      `<div>${job.message || job.status}</div>${parts.join("")}
+       <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+         <i style="width:${pct}%"></i>
+       </div>
+       <div class="hint progress-pct">${pctLabel}</div>`
     );
-    if (job.status === "done") return job;
-    if (job.status === "error") throw new Error(job.message || "采集失败");
+    if (job.status === "done" || job.status === "error") return job;
     await new Promise((r) => setTimeout(r, 800));
   }
 }
 
+function readCollectFormParams() {
+  const collisionCfg = readCollisionConfigFromForm();
+  saveCollisionConfigToStorage(collisionCfg);
+  return {
+    backend: $("#collect-backend").value,
+    det_variant: $("#collect-det").value,
+    width: $("#collect-width").value || "0",
+    height: $("#collect-height").value || "0",
+    frame_rate: $("#collect-fps").value ?? "0",
+    pose_frame_interval: $("#collect-interval").value || "1",
+    max_pose_frames: $("#collect-max").value || "0",
+    save_video: $("#collect-save-video").checked ? "1" : "0",
+    alarm_min_consecutive_frames: String(collisionCfg.alarm_min_consecutive_frames),
+    alarm_cooldown_frames: String(collisionCfg.alarm_cooldown_frames),
+  };
+}
+
+function appendCollectParams(fd, params) {
+  fd.append("backend", params.backend);
+  fd.append("det_variant", params.det_variant);
+  fd.append("width", params.width);
+  fd.append("height", params.height);
+  fd.append("frame_rate", params.frame_rate);
+  fd.append("pose_frame_interval", params.pose_frame_interval);
+  fd.append("max_pose_frames", params.max_pose_frames);
+  fd.append("save_video", params.save_video);
+  fd.append("alarm_min_consecutive_frames", params.alarm_min_consecutive_frames);
+  fd.append("alarm_cooldown_frames", params.alarm_cooldown_frames);
+}
+
 collectForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (isCollectBatchMode()) return;
+
   const file = $("#collect-file").files[0];
-  if (!file) return;
+  if (!file) {
+    showStatus("请选择视频文件", true);
+    return;
+  }
 
   const annFile = $("#collect-annotation").files[0];
   const annCheck = await resolveCollectAnnotationSource(file, annFile);
@@ -546,21 +775,11 @@ collectForm.addEventListener("submit", async (e) => {
 
   const fd = new FormData();
   fd.append("file", file);
-  fd.append("backend", $("#collect-backend").value);
-  fd.append("det_variant", $("#collect-det").value);
-  fd.append("width", $("#collect-width").value || "0");
-  fd.append("height", $("#collect-height").value || "0");
-  fd.append("frame_rate", $("#collect-fps").value ?? "0");
-  fd.append("pose_frame_interval", $("#collect-interval").value || "1");
-  fd.append("max_pose_frames", $("#collect-max").value || "0");
-  fd.append("save_video", $("#collect-save-video").checked ? "1" : "0");
+  const params = readCollectFormParams();
+  appendCollectParams(fd, params);
   if (annFile) fd.append("annotation", annFile);
-  const cameraLabel = $("#collect-camera-label")?.value?.trim();
+  const cameraLabel = getCollectCameraLabel();
   if (cameraLabel && annCheck.source === "camera") fd.append("camera_label", cameraLabel);
-  const collisionCfg = readCollisionConfigFromForm();
-  saveCollisionConfigToStorage(collisionCfg);
-  fd.append("alarm_min_consecutive_frames", String(collisionCfg.alarm_min_consecutive_frames));
-  fd.append("alarm_cooldown_frames", String(collisionCfg.alarm_cooldown_frames));
 
   collectBtn.disabled = true;
   const savingVideo = $("#collect-save-video").checked;
@@ -603,6 +822,137 @@ collectForm.addEventListener("submit", async (e) => {
   }
 });
 
+collectBatchBtn?.addEventListener("click", async () => {
+  const files = filterVideoFilesFromList($("#collect-folder")?.files);
+  if (!files.length) {
+    showStatus("请选择包含视频的文件夹", true);
+    return;
+  }
+  const annCheck = await resolveCollectAnnotationForBatch();
+  if (!annCheck.ok) {
+    showStatus(`❌ ${annCheck.message}`, true);
+    return;
+  }
+
+  const fd = new FormData();
+  for (const f of files) {
+    fd.append("files", f, f.webkitRelativePath || f.name);
+  }
+  fd.append("camera_label", getCollectCameraLabel() || annCheck.camera);
+  const params = readCollectFormParams();
+  appendCollectParams(fd, params);
+
+  collectBatchBtn.disabled = true;
+  collectBtn.disabled = true;
+  showStatus(`上传并批处理 ${files.length} 个视频…`);
+
+  try {
+    const res = await fetch("/api/collect/batch", { method: "POST", body: fd });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+
+    const job = await pollJob(body.job_id);
+    const slug = body.camera_slug || job.camera_slug || "";
+    const okN = job.success_count ?? (job.results || []).length;
+    const errN = job.error_count ?? (job.errors || []).length;
+    collectResult.classList.remove("hidden");
+    collectResult.innerHTML = `
+      <p>✅ 批处理完成：成功 <strong>${okN}</strong>，失败 <strong>${errN}</strong></p>
+      <p>数据目录：<code>localdata/json/${slug}</code>${params.save_video === "1" ? ` · 视频：<code>localdata/video/${slug}</code>` : ""}</p>
+      <p>管理记录与回放请到「回放」页（按机位分组）</p>`;
+    hideStatus();
+    loadRecords();
+  } catch (err) {
+    showStatus(`❌ ${err.message}`, true);
+  } finally {
+    collectBatchBtn.disabled = false;
+    collectBtn.disabled = false;
+  }
+});
+
+function renderRecordItem(s) {
+  const name = s.display_name || s.record_id;
+  const jsonFile = s.pose_label || s.pose_file || `${s.record_id}.json`;
+  const esc = (v) =>
+    String(v ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;");
+  const ridEnc = encodeURIComponent(s.record_id);
+  return `
+      <li class="record-item" data-record-id="${esc(s.record_id)}" data-display-name="${esc(name)}" data-pose-file="${esc(jsonFile)}" data-has-video="${s.has_video ? "1" : "0"}">
+        <div class="record-main">
+          <span class="record-tag">名称</span>
+          <strong class="record-name">${name}</strong>
+          <span class="record-tag">骨架 JSON</span>
+          <code class="record-json">${jsonFile}</code>
+          <span class="record-meta">${s.backend || "?"}${s.det_backend ? ` · ${s.det_backend}` : ""} · ${s.frame_count ?? "?"} 帧${s.has_video ? ' · <span class="record-badge">有视频</span>' : ""}${s.has_stored_annotation || s.collision_enabled ? ' · <span class="record-badge">标注</span>' : ""}${s.collision_enabled ? ' · <span class="record-badge">碰撞</span>' : ""}</span>
+        </div>
+        <span class="record-actions">
+          <a href="${recordApiUrl(s.record_id, "/manifest.json")}" download title="${jsonFile}">下载</a>
+          <a href="${recordApiUrl(s.record_id, "/export.xlsx")}" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
+          ${s.has_video ? `<button type="button" data-annotate="${esc(s.record_id)}" data-stem="${esc(s.video_stem || name)}">标注</button>` : ""}
+          <button type="button" class="danger-btn" data-delete="${esc(s.record_id)}" data-name="${esc(name)}">删除</button>
+        </span>
+      </li>`;
+}
+
+function bindRecordListEvents(list) {
+  list.querySelectorAll(".record-item").forEach((li) => {
+    li.addEventListener("click", (e) => {
+      if (e.target.closest("a, button")) return;
+      selectPlaybackRecordItem(li);
+    });
+    li.addEventListener("dblclick", (e) => {
+      if (e.target.closest("a, button")) return;
+      selectPlaybackRecordItem(li);
+      startPlaybackFromSelectedRecord().catch((err) => setPlaybackInfo(`❌ ${err.message}`));
+    });
+  });
+  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
+  if (keepId) highlightPlaybackRecordInList(keepId);
+  else updatePlaybackLoadButton();
+  list.querySelectorAll("[data-annotate]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (typeof window.openAnnotateForRecord === "function") {
+        window.openAnnotateForRecord(btn.dataset.annotate, btn.dataset.stem);
+      }
+    });
+  });
+  list.querySelectorAll("[data-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const rid = btn.dataset.delete;
+      const name = btn.dataset.name || rid;
+      if (
+        !window.confirm(
+          `确定删除记录「${name}」？\n\n将删除骨架数据、meta 与配套视频。\nannotations/ 目录下的标注文件不会删除。`
+        )
+      ) {
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch(recordApiUrl(rid), { method: "DELETE" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || res.statusText || "删除失败");
+        }
+        if (currentRecordId === rid) {
+          finishPlaybackSession();
+          currentRecordId = null;
+        }
+        if (selectedPlaybackRecord?.recordId === rid) {
+          selectedPlaybackRecord = null;
+          updatePlaybackLoadButton();
+        }
+        await loadRecords();
+      } catch (err) {
+        window.alert(`删除失败：${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 async function loadRecords() {
   const list = $("#session-list");
   const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
@@ -615,85 +965,28 @@ async function loadRecords() {
       updatePlaybackLoadButton();
       return;
     }
-    list.innerHTML = items
-      .map((s) => {
-        const name = s.display_name || s.record_id;
-        const jsonFile = s.pose_label || s.pose_file || `${s.record_id}.json`;
-        const esc = (v) =>
-          String(v ?? "")
-            .replace(/&/g, "&amp;")
-            .replace(/"/g, "&quot;");
-        return `
-      <li class="record-item" data-record-id="${esc(s.record_id)}" data-display-name="${esc(name)}" data-pose-file="${esc(jsonFile)}" data-has-video="${s.has_video ? "1" : "0"}">
-        <div class="record-main">
-          <span class="record-tag">名称</span>
-          <strong class="record-name">${name}</strong>
-          <span class="record-tag">骨架 JSON</span>
-          <code class="record-json">${jsonFile}</code>
-          <span class="record-meta">${s.backend || "?"}${s.det_backend ? ` · ${s.det_backend}` : ""} · ${s.frame_count ?? "?"} 帧${s.has_video ? ' · <span class="record-badge">有视频</span>' : ""}${s.has_stored_annotation || s.collision_enabled ? ' · <span class="record-badge">标注</span>' : ""}${s.collision_enabled ? ' · <span class="record-badge">碰撞</span>' : ""}</span>
-        </div>
-        <span class="record-actions">
-          <a href="${s.pose_url}" download title="${jsonFile}">下载</a>
-          <a href="/api/records/${encodeURIComponent(s.record_id)}/export.xlsx" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
-          ${s.has_video ? `<button type="button" data-annotate="${s.record_id}" data-stem="${s.video_stem || name}">标注</button>` : ""}
-          <button type="button" class="danger-btn" data-delete="${s.record_id}" data-name="${name}">删除</button>
-        </span>
-      </li>`;
+    const groups = new Map();
+    for (const s of items) {
+      const key =
+        s.camera_slug ||
+        s.camera_label ||
+        (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
+        "未分类";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+    const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    list.innerHTML = keys
+      .map((key) => {
+        const rows = groups.get(key).map(renderRecordItem).join("");
+        const title = groups.get(key)[0]?.camera_label || key;
+        return `<section class="record-group" data-camera-slug="${key}">
+          <h3 class="record-group-title">机位 ${title} <code>localdata/json/${key}</code></h3>
+          <ul class="session-list">${rows}</ul>
+        </section>`;
       })
       .join("");
-    list.querySelectorAll(".record-item").forEach((li) => {
-      li.addEventListener("click", (e) => {
-        if (e.target.closest("a, button")) return;
-        selectPlaybackRecordItem(li);
-      });
-      li.addEventListener("dblclick", (e) => {
-        if (e.target.closest("a, button")) return;
-        selectPlaybackRecordItem(li);
-        startPlaybackFromSelectedRecord().catch((err) => setPlaybackInfo(`❌ ${err.message}`));
-      });
-    });
-    if (keepId) highlightPlaybackRecordInList(keepId);
-    else updatePlaybackLoadButton();
-    list.querySelectorAll("[data-annotate]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        if (typeof window.openAnnotateForRecord === "function") {
-          window.openAnnotateForRecord(btn.dataset.annotate, btn.dataset.stem);
-        }
-      });
-    });
-    list.querySelectorAll("[data-delete]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const rid = btn.dataset.delete;
-        const name = btn.dataset.name || rid;
-        if (
-          !window.confirm(
-            `确定删除记录「${name}」？\n\n将删除骨架数据、meta 与配套视频。\nannotations/ 目录下的标注文件不会删除。`
-          )
-        ) {
-          return;
-        }
-        btn.disabled = true;
-        try {
-          const res = await fetch(`/api/records/${encodeURIComponent(rid)}`, { method: "DELETE" });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || res.statusText || "删除失败");
-          }
-          if (currentRecordId === rid) {
-            finishPlaybackSession();
-            currentRecordId = null;
-          }
-          if (selectedPlaybackRecord?.recordId === rid) {
-            selectedPlaybackRecord = null;
-            updatePlaybackLoadButton();
-          }
-          await loadRecords();
-        } catch (err) {
-          window.alert(`删除失败：${err.message}`);
-          btn.disabled = false;
-        }
-      });
-    });
+    bindRecordListEvents(list);
   } catch {
     list.innerHTML = "<li class='hint'>无法加载列表</li>";
   }

@@ -38,11 +38,20 @@ def record_id_from_path(path: Path) -> str:
 
 
 def meta_sidecar_path(json_dir: Path, record_id: str) -> Path:
-    return json_dir / f"{record_id}.meta.json"
+    rid = str(record_id or "").strip().replace("\\", "/")
+    if "/" in rid:
+        bucket, name = rid.split("/", 1)
+        return json_dir / bucket / f"{name}.meta.json"
+    return json_dir / f"{rid}.meta.json"
 
 
-def locate_record(json_dir: Path, record_id: str, *, include_archive: bool = True) -> RecordLocator | None:
-    rid = str(record_id or "").strip()
+def _locate_in_dir(
+    json_dir: Path,
+    record_id: str,
+    *,
+    include_archive: bool = True,
+) -> RecordLocator | None:
+    rid = str(record_id or "").strip().replace("\\", "/")
     if not rid:
         return None
 
@@ -83,24 +92,47 @@ def locate_record(json_dir: Path, record_id: str, *, include_archive: bool = Tru
     return None
 
 
+def locate_record(json_dir: Path, record_id: str, *, include_archive: bool = True) -> RecordLocator | None:
+    rid = str(record_id or "").strip().replace("\\", "/")
+    if not rid:
+        return None
+    if "/" in rid:
+        bucket, name = rid.split("/", 1)
+        found = _locate_in_dir(json_dir / bucket, name, include_archive=include_archive)
+        if found:
+            return RecordLocator(rid, found.storage, found.path)
+    return _locate_in_dir(json_dir, rid, include_archive=include_archive)
+
+
 def iter_active_records(json_dir: Path) -> list[RecordLocator]:
     items: list[RecordLocator] = []
     seen: set[str] = set()
+    reserved = {"archive", "annotations"}
+
+    def _add(loc: RecordLocator) -> None:
+        if loc.record_id not in seen:
+            seen.add(loc.record_id)
+            items.append(loc)
 
     for p in json_dir.iterdir():
-        if p.name in ("archive", "annotations") or p.name.startswith("."):
+        if p.name in reserved or p.name.startswith("."):
             continue
         if p.is_dir() and is_v2_package(p):
-            rid = p.name
-            if rid not in seen:
-                seen.add(rid)
-                items.append(RecordLocator(rid, STORAGE_V2_PARQUET, p))
+            _add(RecordLocator(p.name, STORAGE_V2_PARQUET, p))
             continue
         if is_v1_json(p):
-            rid = p.stem
-            if rid not in seen:
-                seen.add(rid)
-                items.append(RecordLocator(rid, STORAGE_V1_JSON, p))
+            _add(RecordLocator(p.stem, STORAGE_V1_JSON, p))
+            continue
+        if p.is_dir():
+            for child in p.iterdir():
+                if child.name.endswith(".meta.json"):
+                    continue
+                if child.is_dir() and is_v2_package(child):
+                    rid = f"{p.name}/{child.name}"
+                    _add(RecordLocator(rid, STORAGE_V2_PARQUET, child))
+                elif is_v1_json(child):
+                    rid = f"{p.name}/{child.stem}"
+                    _add(RecordLocator(rid, STORAGE_V1_JSON, child))
 
     items.sort(key=lambda loc: loc.path.stat().st_mtime, reverse=True)
     return items
