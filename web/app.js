@@ -169,80 +169,46 @@ async function cleanupPlaybackVideo() {
   }
 }
 
-// --- 标注页历史记录下拉（与采集区同源 /api/records） ---
-async function loadAnnotateRecordSelect() {
-  const sel = document.getElementById("annotate-record");
-  if (!sel) return;
+// --- 回放页：列表选中一条记录后加载 ---
+let selectedPlaybackRecord = null;
 
-  sel.innerHTML = '<option value="">— 选择历史记录 —</option>';
-
-  let items = [];
-  try {
-    const optRes = await fetch("/api/annotate/options");
-    if (optRes.ok) {
-      const data = await optRes.json();
-      if (Array.isArray(data)) items = data;
-    }
-  } catch {
-    /* 回退 records */
-  }
-
-  if (!items.length) {
-    try {
-      const res = await fetch("/api/records");
-      if (!res.ok) throw new Error(await res.text());
-      const records = await res.json();
-      if (Array.isArray(records)) {
-        items = records.map((r) => ({
-          video_stem: r.video_stem || r.display_name || r.record_id,
-          display_name: r.display_name || r.record_id,
-          record_id: r.record_id || "",
-          pose_file: r.pose_file || r.pose_label || "",
-          source_video: r.source_video || "",
-          has_video: !!r.has_video,
-          has_stored_annotation: !!(r.has_stored_annotation || r.has_annotation),
-        }));
-      }
-    } catch (err) {
-      sel.innerHTML = '<option value="">无法加载记录</option>';
-      const status = document.getElementById("annotate-status");
-      if (status) {
-        status.classList.remove("hidden", "error");
-        status.classList.add("error");
-        status.textContent = `加载历史记录失败: ${err.message}`;
-      }
-      return;
-    }
-  }
-
-  if (!items.length) {
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.disabled = true;
-    empty.textContent = "暂无记录（可先采集或上传本地视频标注）";
-    sel.appendChild(empty);
-    return;
-  }
-
-  items.forEach((s) => {
-    const opt = document.createElement("option");
-    const stem = s.video_stem || s.display_name || "";
-    opt.value = s.record_id ? s.record_id : `stem:${stem}`;
-    const tags = [];
-    if (s.has_stored_annotation) tags.push("有标注");
-    if (s.has_video) tags.push("有视频");
-    else tags.push("无视频");
-    const jsonHint = s.pose_file ? ` · ${s.pose_file}` : "";
-    opt.textContent = `${s.display_name || stem}${jsonHint}${tags.length ? ` · ${tags.join(" · ")}` : ""}`;
-    opt.dataset.videoStem = stem;
-    opt.dataset.sourceVideo = s.source_video || "";
-    opt.dataset.hasVideo = s.has_video ? "1" : "0";
-    opt.dataset.recordId = s.record_id || "";
-    sel.appendChild(opt);
-  });
+function updatePlaybackLoadButton() {
+  const btn = document.getElementById("playback-load-record");
+  if (btn) btn.disabled = !selectedPlaybackRecord?.recordId;
 }
 
-window.loadRecordsForAnnotate = loadAnnotateRecordSelect;
+function selectPlaybackRecordItem(li) {
+  if (!li?.dataset?.recordId) return;
+  selectedPlaybackRecord = {
+    recordId: li.dataset.recordId,
+    displayName: li.dataset.displayName || li.dataset.recordId,
+    poseFile: li.dataset.poseFile || "",
+    hasVideo: li.dataset.hasVideo === "1",
+  };
+  document.querySelectorAll("#session-list .record-item").forEach((el) => {
+    el.classList.toggle("record-item-selected", el === li);
+  });
+  updatePlaybackLoadButton();
+}
+
+function highlightPlaybackRecordInList(recordId) {
+  if (!recordId) return;
+  const li = document.querySelector(`#session-list .record-item[data-record-id="${CSS.escape(recordId)}"]`);
+  if (li) selectPlaybackRecordItem(li);
+}
+
+function getPlaybackRecordSelection() {
+  return selectedPlaybackRecord;
+}
+
+async function startPlaybackFromSelectedRecord() {
+  const sel = getPlaybackRecordSelection();
+  if (!sel?.recordId) {
+    setPlaybackInfo("❌ 请先在下方列表点击选择一条记录");
+    return;
+  }
+  await openRecordReplay(sel.recordId, sel.displayName, sel.poseFile, sel.hasVideo);
+}
 
 // --- 标签页 ---
 /** 切离回放页：仅暂停，保留视频源、事件列表与画布叠加 */
@@ -277,11 +243,15 @@ tabs.forEach((btn) => {
     Object.values(panels).forEach((p) => p.classList.remove("active"));
     panels[btn.dataset.tab].classList.add("active");
     if (btn.dataset.tab === "collect") {
-      loadRecords();
       void loadInferenceConfigDefaults();
     }
-    if (btn.dataset.tab === "annotate") loadAnnotateRecordSelect();
-    if (btn.dataset.tab === "playback") restorePlaybackPanelUi();
+    if (btn.dataset.tab === "annotate") {
+      if (typeof window.initAnnotatePanel === "function") window.initAnnotatePanel();
+    }
+    if (btn.dataset.tab === "playback") {
+      loadRecords();
+      restorePlaybackPanelUi();
+    }
   });
 });
 
@@ -381,7 +351,7 @@ const collectForm = $("#collect-form");
 const collectStatus = $("#collect-status");
 const collectResult = $("#collect-result");
 const collectBtn = $("#collect-btn");
-const collectAnnotationHint = $("#collect-annotation-hint");
+const collectAnnotationStatus = $("#collect-annotation-status");
 
 function videoStemFromFilename(name) {
   const base = String(name || "").trim();
@@ -400,7 +370,7 @@ function openAnnotateForVideoStem(stem) {
   switchToTab("annotate");
   const stemEl = document.querySelector("#annotate-stem");
   if (stemEl && s) stemEl.value = s;
-  if (typeof loadAnnotateRecordSelect === "function") loadAnnotateRecordSelect();
+  if (typeof window.initAnnotatePanel === "function") window.initAnnotatePanel();
 }
 
 async function resolveCollectAnnotationSource(file, annFile) {
@@ -421,28 +391,29 @@ async function resolveCollectAnnotationSource(file, annFile) {
 }
 
 async function refreshCollectAnnotationHint() {
-  if (!collectAnnotationHint) return;
+  if (!collectAnnotationStatus) return;
   const file = $("#collect-file")?.files?.[0];
   const annFile = $("#collect-annotation")?.files?.[0];
   if (!file) {
-    collectAnnotationHint.innerHTML =
-      '按视频主名绑定一份标注。未上传时将检查 <code>localdata/json/annotations/{主名}.json</code>；若无标注请先 <button type="button" class="link-btn collect-goto-annotate">去标注页</button> 或上传 JSON。采集将<strong>强制</strong>计算并保存碰撞/告警事件。';
+    collectAnnotationStatus.classList.add("hidden");
+    collectAnnotationStatus.innerHTML = "";
     return;
   }
+  collectAnnotationStatus.classList.remove("hidden");
   const check = await resolveCollectAnnotationSource(file, annFile);
   if (check.ok) {
     const via =
       check.source === "upload"
         ? "将使用本次上传的标注 JSON"
         : `将使用已存标注（<code>annotations/${check.stem}.json</code>）`;
-    collectAnnotationHint.innerHTML = `✅ ${via}，采集时会计算并保存碰撞/告警。`;
+    collectAnnotationStatus.innerHTML = `✅ ${via}，采集时会计算并保存碰撞/告警。`;
     return;
   }
   const stemEsc = String(check.stem || "").replace(/"/g, "&quot;");
-  collectAnnotationHint.innerHTML = `⚠️ ${check.message} <button type="button" class="link-btn collect-goto-annotate" data-stem="${stemEsc}">去标注「${check.stem}」</button>`;
+  collectAnnotationStatus.innerHTML = `⚠️ ${check.message} <button type="button" class="link-btn collect-goto-annotate" data-stem="${stemEsc}">去标注「${check.stem}」</button>`;
 }
 
-collectAnnotationHint?.addEventListener("click", (e) => {
+collectAnnotationStatus?.addEventListener("click", (e) => {
   const btn = e.target.closest(".collect-goto-annotate");
   if (!btn) return;
   const file = $("#collect-file")?.files?.[0];
@@ -538,20 +509,7 @@ collectForm.addEventListener("submit", async (e) => {
         : "";
     collectResult.innerHTML = `
       <p>✅ 已保存至 <code>localdata/json</code>${hasVideo ? " 与 <code>localdata/video</code>" : ""}${annNote}，共 <strong>${job.frame_count ?? "?"}</strong> 帧</p>
-      <p>
-        <a href="${job.pose_url}" download>下载 JSON</a>
-        · <button type="button" class="primary-link" data-replay="${rid}" data-has-video="${hasVideo ? "1" : "0"}">回放</button>
-      </p>`;
-    const poseFile = job.pose_file || body.pose_file || "";
-    const dispName =
-      job.display_name || poseFile.replace(/_rtmpose_[tsm](?:_[\w]+)?\.json$/i, "") || rid;
-    collectResult.querySelector("[data-replay]")?.addEventListener("click", async () => {
-      try {
-        await openRecordReplay(rid, dispName, poseFile, hasVideo);
-      } catch (err) {
-        setPlaybackInfo(`❌ ${err.message}`);
-      }
-    });
+      <p><a href="${job.pose_url}" download>下载 JSON</a> · 管理记录与骨架回放请到「回放」页</p>`;
     hideStatus();
     loadRecords();
   } catch (err) {
@@ -563,19 +521,26 @@ collectForm.addEventListener("submit", async (e) => {
 
 async function loadRecords() {
   const list = $("#session-list");
+  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
   try {
     const res = await fetch("/api/records");
     const items = await res.json();
     if (!items.length) {
-      list.innerHTML = "<li class='hint'>暂无记录</li>";
+      list.innerHTML = "<li class='hint'>暂无记录（请先在采集页完成采集）</li>";
+      selectedPlaybackRecord = null;
+      updatePlaybackLoadButton();
       return;
     }
     list.innerHTML = items
       .map((s) => {
         const name = s.display_name || s.record_id;
         const jsonFile = s.pose_label || s.pose_file || `${s.record_id}.json`;
+        const esc = (v) =>
+          String(v ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;");
         return `
-      <li class="record-item">
+      <li class="record-item" data-record-id="${esc(s.record_id)}" data-display-name="${esc(name)}" data-pose-file="${esc(jsonFile)}" data-has-video="${s.has_video ? "1" : "0"}">
         <div class="record-main">
           <span class="record-tag">名称</span>
           <strong class="record-name">${name}</strong>
@@ -587,26 +552,24 @@ async function loadRecords() {
           <a href="${s.pose_url}" download title="${jsonFile}">下载</a>
           <a href="/api/records/${encodeURIComponent(s.record_id)}/export.xlsx" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
           ${s.has_video ? `<button type="button" data-annotate="${s.record_id}" data-stem="${s.video_stem || name}">标注</button>` : ""}
-          <button type="button" data-replay="${s.record_id}" data-name="${name}" data-json="${jsonFile}" data-has-video="${s.has_video ? "1" : "0"}">回放</button>
           <button type="button" class="danger-btn" data-delete="${s.record_id}" data-name="${name}">删除</button>
         </span>
       </li>`;
       })
       .join("");
-    list.querySelectorAll("[data-replay]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          await openRecordReplay(
-            btn.dataset.replay,
-            btn.dataset.name,
-            btn.dataset.json,
-            btn.dataset.hasVideo === "1"
-          );
-        } catch (err) {
-          setPlaybackInfo(`❌ ${err.message}`);
-        }
+    list.querySelectorAll(".record-item").forEach((li) => {
+      li.addEventListener("click", (e) => {
+        if (e.target.closest("a, button")) return;
+        selectPlaybackRecordItem(li);
+      });
+      li.addEventListener("dblclick", (e) => {
+        if (e.target.closest("a, button")) return;
+        selectPlaybackRecordItem(li);
+        startPlaybackFromSelectedRecord().catch((err) => setPlaybackInfo(`❌ ${err.message}`));
       });
     });
+    if (keepId) highlightPlaybackRecordInList(keepId);
+    else updatePlaybackLoadButton();
     list.querySelectorAll("[data-annotate]").forEach((btn) => {
       btn.addEventListener("click", () => {
         if (typeof window.openAnnotateForRecord === "function") {
@@ -636,10 +599,11 @@ async function loadRecords() {
             finishPlaybackSession();
             currentRecordId = null;
           }
-          await loadRecords();
-          if (typeof loadAnnotateRecordSelect === "function") {
-            loadAnnotateRecordSelect();
+          if (selectedPlaybackRecord?.recordId === rid) {
+            selectedPlaybackRecord = null;
+            updatePlaybackLoadButton();
           }
+          await loadRecords();
         } catch (err) {
           window.alert(`删除失败：${err.message}`);
           btn.disabled = false;
@@ -715,6 +679,7 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   await cleanupPlaybackVideo();
   clearVideoElement();
   currentRecordId = recordId;
+  highlightPlaybackRecordInList(recordId);
   resetFrameFetchState();
   const poseRes = await fetch(`/api/records/${encodeURIComponent(recordId)}/manifest.json`);
   if (!poseRes.ok) {
@@ -1704,5 +1669,9 @@ seekBar.addEventListener("input", async () => {
 });
 
 loadRecords();
-loadAnnotateRecordSelect();
 void loadInferenceConfigDefaults();
+updatePlaybackLoadButton();
+
+$("#playback-load-record")?.addEventListener("click", () => {
+  startPlaybackFromSelectedRecord().catch((err) => setPlaybackInfo(`❌ ${err.message}`));
+});

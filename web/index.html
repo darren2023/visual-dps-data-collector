@@ -21,16 +21,27 @@
   <main>
     <section id="panel-collect" class="panel active">
       <form id="collect-form" class="card">
-        <label>视频文件<input type="file" id="collect-file" accept="video/*" required /></label>
+        <label>
+          <span class="label-with-tip">视频文件
+            <button type="button" class="field-tip" data-tip="选择待采集的源视频，将按下方推理参数提取人体骨架并写入 JSON。">?</button>
+          </span>
+          <input type="file" id="collect-file" accept="video/*" required />
+        </label>
         <div class="row">
-          <label>姿态（models.backend）
+          <label>
+            <span class="label-with-tip">姿态（models.backend）
+              <button type="button" class="field-tip" data-tip="RTMPose 模型档位：t 最快、s 均衡、m 更准。影响推理速度与关键点精度。">?</button>
+            </span>
             <select id="collect-backend">
               <option value="rtmpose_t">rtmpose_t</option>
               <option value="rtmpose_s">rtmpose_s</option>
               <option value="rtmpose_m">rtmpose_m</option>
             </select>
           </label>
-          <label>检测（models.det_variant）
+          <label>
+            <span class="label-with-tip">检测（models.det_variant）
+              <button type="button" class="field-tip" data-tip="人体检测档。推荐 m（RTMDet-m 640），与 box_human_det 同级。官方 ONNX 仅提供 t/m，选 s/l 会自动回退。">?</button>
+            </span>
             <select id="collect-det">
               <option value="t">rtmdet_t · nano 320</option>
               <option value="m" selected>rtmdet_m · 640（推荐仓库场景）</option>
@@ -39,96 +50,188 @@
             </select>
           </label>
         </div>
-        <p class="hint field-hint">检测档 <strong>m</strong> 与 box_human_det 同级（RTMDet-m 640）；官方 ONNX 仅提供 t/m，s/l 自动回退。</p>
         <div class="row">
-          <label>推理宽<input type="number" id="collect-width" value="0" min="0" title="0=按高度等比自动计算（与 visual-dps 一致）" /></label>
-          <label>推理高（inference.height）<input type="number" id="collect-height" value="480" min="0" title="0=不缩放；仅填高时按源视频等比缩放宽" /></label>
+          <label>
+            <span class="label-with-tip">推理宽
+              <button type="button" class="field-tip" data-tip="inference 输入宽度。0 表示按「推理高」等比自动计算（与 visual-dps 一致）。宽高都填则强制固定尺寸。">?</button>
+            </span>
+            <input type="number" id="collect-width" value="0" min="0" />
+          </label>
+          <label>
+            <span class="label-with-tip">推理高（inference.height）
+              <button type="button" class="field-tip" data-tip="inference 输入高度。0 表示不缩放；只填高（如 480）时宽按源视频比例计算且不放大。">?</button>
+            </span>
+            <input type="number" id="collect-height" value="480" min="0" />
+          </label>
         </div>
-        <p class="hint field-hint">与 visual-dps 一致：只填<strong>推理高</strong>（如 480）时，宽按源视频比例自动计算且不放大；宽、高都填才强制固定尺寸。</p>
         <div class="field-block">
-          <label for="collect-fps">frame_rate（inference.frame_rate）</label>
+          <label for="collect-fps" class="label-with-tip">frame_rate（inference.frame_rate）
+            <button type="button" class="field-tip" data-tip="采集时每秒最多推理多少帧（节拍上限，不是视频 FPS）。0=尽快处理完；15≈每帧间隔 1/15 秒，接近实时预览负载（与 visual-dps / box_human_det 一致）。">?</button>
+          </label>
           <input type="number" id="collect-fps" value="0" min="0" step="1" />
-          <p class="hint field-hint">
-            采集时<strong>每秒最多推理多少帧</strong>（推理+写入 JSON 的节拍上限，不是视频本身 FPS）。
-            <strong>默认 0</strong>：不额外等待，尽快处理完视频（适合离线全量导出）。
-            设为 <strong>15</strong> 时：每帧推理后若不足约 1/15 秒会 sleep，整体更接近实时预览负载（与 visual-dps / box_human_det 一致）。
-          </p>
         </div>
         <div class="row">
-          <label>pose_frame_interval<input type="number" id="collect-interval" value="1" min="1" title="每隔 N 帧推理一次" /></label>
-          <label>max_pose_frames<input type="number" id="collect-max" value="0" min="0" title="0=不限制" /></label>
+          <label>
+            <span class="label-with-tip">pose_frame_interval
+              <button type="button" class="field-tip" data-tip="每隔 N 帧做一次姿态推理。1 表示每帧都推理；增大可加快采集、降低帧密度。">?</button>
+            </span>
+            <input type="number" id="collect-interval" value="1" min="1" />
+          </label>
+          <label>
+            <span class="label-with-tip">max_pose_frames
+              <button type="button" class="field-tip" data-tip="最多写入多少帧骨架到 JSON。0 表示不限制，处理完整视频。">?</button>
+            </span>
+            <input type="number" id="collect-max" value="0" min="0" />
+          </label>
         </div>
         <label class="toggle-row">
           <input type="checkbox" id="collect-save-video" checked />
-          <span>保存配套视频至 <code>localdata/video</code>（默认开启，与 JSON 同记录关联）</span>
+          <span class="label-with-tip">保存配套视频至 <code>localdata/video</code>
+            <button type="button" class="field-tip" data-tip="默认开启：将源视频副本与骨架 JSON 同一记录关联保存，便于回放页加载。">?</button>
+          </span>
         </label>
-        <label>标注 JSON（必填其一：本地上传或已在标注页保存）
+        <label>
+          <span class="label-with-tip">标注 JSON（必填其一：本地上传或标注页已保存）
+            <button type="button" class="field-tip" data-tip="按视频主名绑定一份货位标注。未上传时检查 localdata/json/annotations/{主名}.json。采集将强制计算并保存碰撞/告警事件。">?</button>
+          </span>
           <input type="file" id="collect-annotation" accept=".json,application/json" />
         </label>
-        <p id="collect-annotation-hint" class="hint field-hint">按视频主名绑定一份标注。未上传时将检查 <code>localdata/json/annotations/{主名}.json</code>；若无标注请先 <button type="button" id="collect-goto-annotate" class="link-btn">去标注页</button> 或上传 JSON。采集将<strong>强制</strong>计算并保存碰撞/告警事件。</p>
+        <p id="collect-annotation-status" class="annotation-status hint hidden" role="status"></p>
         <fieldset class="collision-config">
-          <legend>碰撞检测（inference，与 visual-dps 一致）</legend>
+          <legend class="legend-with-tip">碰撞检测（inference，与 visual-dps 一致）
+            <button type="button" class="field-tip" data-tip="瞬时碰撞：手腕（COCO 9/10）score>0.3 进入货框 → collisions；连续命中且过冷却 → alarm_collisions。默认来自 config.json；回放补算也用此处参数。">?</button>
+          </legend>
           <div class="row">
-            <label>alarm_min_consecutive_frames
-              <input type="number" id="collect-alarm-min" value="3" min="1" step="1" title="手腕在货框内连续命中多少帧后触发告警" />
+            <label>
+              <span class="label-with-tip">alarm_min_consecutive_frames
+                <button type="button" class="field-tip" data-tip="手腕在货框内连续命中达到该帧数后，才触发告警（alarm）。">?</button>
+              </span>
+              <input type="number" id="collect-alarm-min" value="3" min="1" step="1" />
             </label>
-            <label>alarm_cooldown_frames
-              <input type="number" id="collect-alarm-cooldown" value="6" min="1" step="1" title="同一货框两次告警之间的最小帧间隔" />
+            <label>
+              <span class="label-with-tip">alarm_cooldown_frames
+                <button type="button" class="field-tip" data-tip="同一货框两次告警之间的最小帧间隔，用于抑制重复告警。">?</button>
+              </span>
+              <input type="number" id="collect-alarm-cooldown" value="6" min="1" step="1" />
             </label>
           </div>
-          <p class="hint field-hint">瞬时碰撞：手腕（COCO 9/10）score&gt;0.3 进入货框 → <code>collisions</code>；满足连续帧且过冷却 → <code>alarm_collisions</code>。默认来自 <code>config.json</code>，可修改；回放补算时也使用此处配置。</p>
         </fieldset>
         <button type="submit" id="collect-btn">开始采集</button>
       </form>
       <div id="collect-status" class="status hidden"></div>
       <div id="collect-result" class="card hidden"></div>
-
-      <h2>历史记录（JSON + 视频）</h2>
-      <ul id="session-list" class="session-list"></ul>
+      <p class="inline-tip-row collect-records-hint">
+        <button type="button" class="field-tip" data-tip="已保存记录的下载、标注与删除请到「回放」页；骨架回放也在该页。">?</button>
+        <span>记录管理与回放见「回放」页</span>
+      </p>
     </section>
 
     <section id="panel-annotate" class="panel">
       <div class="card">
-        <p class="hint">在视频首帧上标定货架透视网格，保存为 visual-dps 兼容 JSON。同一 <code>video_stem</code> 仅保留最新一份标注。</p>
         <div class="row">
-          <label>历史记录
-            <select id="annotate-record">
-              <option value="">— 选择历史记录 —</option>
-            </select>
-          </label>
-          <label>video_stem（视频主名）
+          <label>
+            <span class="label-with-tip">video_stem（视频主名）
+              <button type="button" class="field-tip" data-tip="与视频文件名主名一致，用于关联 annotations/{主名}.json。同一主名仅保留最新一份标注。">?</button>
+            </span>
             <input type="text" id="annotate-stem" placeholder="与视频文件名主名一致" />
           </label>
         </div>
         <div class="annotate-actions">
-          <button type="button" id="annotate-load-record">加载记录首帧</button>
-          <label class="inline-file">本地视频<input type="file" id="annotate-video" accept="video/*" /></label>
-          <label class="inline-file">上传 JSON 覆盖<input type="file" id="annotate-json-upload" accept=".json,application/json" /></label>
+          <label class="inline-file">
+            <span class="label-with-tip">本地视频
+              <button type="button" class="field-tip" data-tip="选择本地视频以提取首帧到画布；也可在采集页已存记录的场景下仅填 video_stem 后从服务端取帧。">?</button>
+            </span>
+            <input type="file" id="annotate-video" accept="video/*" />
+          </label>
+          <span class="label-with-tip">
+            <button type="button" id="annotate-load-frame">加载首帧</button>
+            <button type="button" class="field-tip" data-tip="将视频第一帧绘制到画布，用于标定货架透视与货位。需先选择本地视频或填写 video_stem。">?</button>
+          </span>
+          <label class="inline-file">
+            <span class="label-with-tip">上传 JSON 覆盖
+              <button type="button" class="field-tip" data-tip="从本机加载已有标注 JSON 覆盖当前编辑内容（保存前不会写盘）。">?</button>
+            </span>
+            <input type="file" id="annotate-json-upload" accept=".json,application/json" />
+          </label>
         </div>
         <div class="row annotate-grid-size">
-          <label>网格行数<input type="number" id="annotate-rows" value="4" min="1" max="20" /></label>
-          <label>网格列数<input type="number" id="annotate-cols" value="4" min="1" max="20" /></label>
+          <label>
+            <span class="label-with-tip">网格行数
+              <button type="button" class="field-tip" data-tip="货架透视网格行数（1–8）。拖动绿色角点对齐货架后，点「生成货位」按行列切分。">?</button>
+            </span>
+            <input type="number" id="annotate-rows" value="4" min="1" max="8" />
+          </label>
+          <label>
+            <span class="label-with-tip">网格列数
+              <button type="button" class="field-tip" data-tip="货架透视网格列数（1–8）。">?</button>
+            </span>
+            <input type="number" id="annotate-cols" value="4" min="1" max="8" />
+          </label>
+          <span class="label-with-tip">
+            <button type="button" id="annotate-confirm-grid" class="primary-btn">生成货位</button>
+            <button type="button" class="field-tip" data-tip="与 visual-dps 一致：根据四角透视网格生成货位四边形，之后可拖橙色角点或平移货位。">?</button>
+          </span>
+        </div>
+        <div id="annotate-cell-panel" class="annotate-cell-panel hidden">
+          <span class="hint" id="annotate-cell-pos">—</span>
+          <label class="field">
+            <span class="label-with-tip">货位编号
+              <button type="button" class="field-tip" data-tip="当前选中货位的业务编号，保存进 JSON；留空则按行列默认编号。">?</button>
+            </span>
+            <input type="text" id="annotate-box-id" placeholder="默认按行列编号" />
+          </label>
+          <button type="button" id="annotate-delete-cell" class="danger-btn">删除货位</button>
         </div>
         <div class="annotate-actions">
           <button type="button" id="annotate-save" class="primary-btn">保存标注（覆盖）</button>
-          <button type="button" id="annotate-restart">重新网格标注</button>
+          <button type="button" id="annotate-restart">重置货架</button>
           <button type="button" id="annotate-download">下载当前 JSON</button>
         </div>
       </div>
-      <div id="annotate-status" class="status hidden"></div>
+      <div id="annotate-status" class="status annotate-status-bar hidden" role="status" aria-live="polite"></div>
+      <div id="annotate-verify" class="annotate-verify hidden" role="alert"></div>
       <div class="annotate-stage">
         <canvas id="annotate-canvas" class="hidden"></canvas>
-        <p class="hint annotate-hint">步骤：① 加载视频首帧 → ② 依次点击 4 个角点 → ③ 拖拽黄线对齐货框 → ④ 保存</p>
+        <p class="annotate-stage-hint">
+          <span class="hint">画布</span>
+          <button type="button" class="field-tip" data-tip="步骤：① 加载首帧 → ② 生成货位并对照 → ③ 拖绿色/橙色角点或平移货位 → ④ 保存。交互与现场 visual-dps 一致。">?</button>
+        </p>
       </div>
     </section>
 
     <section id="panel-playback" class="panel">
-      <div class="card">
-        <label>骨架 JSON<input type="file" id="playback-json" accept=".json,application/json" /></label>
-        <label>标注 JSON（可选，若 pose JSON 内无 annotation.boxes）<input type="file" id="playback-annotation" accept=".json,application/json" /></label>
-        <label>替换视频（可选，仅当记录无已保存视频或需本地替换时）<input type="file" id="playback-video" accept="video/*" /></label>
-        <p class="hint">从历史记录回放时会自动加载已保存的配套视频；手动导入 JSON 时可在此选择视频。</p>
+      <div class="playback-records-toolbar">
+        <h2 class="playback-records-heading heading-with-tip">
+          已保存记录
+          <button type="button" class="field-tip" data-tip="单击一条记录选中，再点「加载并回放」；双击记录行可直接加载。右侧可进行下载、导出 Excel、标注或删除。">?</button>
+        </h2>
+        <button type="button" id="playback-load-record" class="primary-btn" disabled>加载并回放</button>
       </div>
+      <ul id="session-list" class="session-list"></ul>
+
+      <details class="playback-import-details">
+        <summary>手动导入 JSON / 视频</summary>
+        <div class="card playback-import-card">
+          <label>
+            <span class="label-with-tip">骨架 JSON
+              <button type="button" class="field-tip" data-tip="手动导入 pose JSON 进行回放（无已保存记录时）。导入后可再选标注与视频。">?</button>
+            </span>
+            <input type="file" id="playback-json" accept=".json,application/json" />
+          </label>
+          <label>
+            <span class="label-with-tip">标注 JSON（可选）
+              <button type="button" class="field-tip" data-tip="若 pose JSON 内无 annotation.boxes，可在此补充货框标注，用于叠加货位与碰撞/告警计算。">?</button>
+            </span>
+            <input type="file" id="playback-annotation" accept=".json,application/json" />
+          </label>
+          <label>
+            <span class="label-with-tip">替换视频（可选）
+              <button type="button" class="field-tip" data-tip="记录无配套视频或需用本地文件替换时选择。不选则仅播放骨骼叠加。">?</button>
+            </span>
+            <input type="file" id="playback-video" accept="video/*" />
+          </label>
+        </div>
+      </details>
 
       <div class="stage-wrap">
         <video id="playback-video-el" playsinline controls preload="metadata"></video>
@@ -166,9 +269,12 @@
     </section>
   </main>
 
+  <script src="fieldTips.js"></script>
   <script src="previewLayout.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
-  <script src="app.js?v=11"></script>
-  <script src="annotate.js?v=3"></script>
+  <script src="annotateGeometry.js"></script>
+  <script src="annotateVisualMode.js"></script>
+  <script src="app.js?v=17"></script>
+  <script src="annotate.js?v=10"></script>
 </body>
 </html>

@@ -197,19 +197,80 @@ def _video_path_for_record(record_id: str) -> Path | None:
         return None
     paths = resolve_app_paths()
     sidecar = _meta_path_for_record(record_id, locator)
+    meta: dict[str, Any] | None = None
     if sidecar.is_file():
         try:
             meta = json.loads(sidecar.read_text(encoding="utf-8"))
-            vf = str(meta.get("video_file") or "").strip()
-            if vf:
-                candidate = paths.video_dir / vf
-                if candidate.is_file():
-                    return candidate
         except json.JSONDecodeError:
-            pass
-    stem = locator.record_id
+            meta = None
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(p)
+
+    if meta:
+        vf = str(meta.get("video_file") or "").strip()
+        if vf:
+            _add(paths.video_dir / vf)
+        src = str(meta.get("source_video") or "").strip()
+        if src:
+            _add(paths.video_dir / Path(src).name)
+        for stem_key in (
+            str(meta.get("video_stem") or "").strip(),
+            str(meta.get("display_name") or "").strip(),
+        ):
+            if not stem_key:
+                continue
+            safe = sanitize_file_stem(stem_key)
+            for ext in VIDEO_EXTENSIONS:
+                _add(paths.video_dir / f"{safe}{ext}")
+
+    record_stem = locator.record_id
     for ext in VIDEO_EXTENSIONS:
-        candidate = paths.video_dir / f"{stem}{ext}"
+        _add(paths.video_dir / f"{record_stem}{ext}")
+
+    if meta is None or not str(meta.get("video_stem") or "").strip():
+        resolved_stem = _resolve_video_stem_for_record(record_id, locator=locator, meta=meta)
+        if resolved_stem and resolved_stem != record_stem:
+            for ext in VIDEO_EXTENSIONS:
+                _add(paths.video_dir / f"{resolved_stem}{ext}")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _video_path_for_video_stem(video_stem: str) -> Path | None:
+    """按 video_stem / 标注内 source_video 在 video_dir 查找配套视频。"""
+    paths = resolve_app_paths()
+    stem = sanitize_file_stem(video_stem)
+    if not stem:
+        return None
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(p)
+
+    ann = load_annotation_json(stem, annotation_dir=paths.annotation_dir)
+    if ann:
+        src = str((ann.get("source_info") or {}).get("source_video") or "").strip()
+        if src:
+            _add(paths.video_dir / Path(src).name)
+    for ext in VIDEO_EXTENSIONS:
+        _add(paths.video_dir / f"{stem}{ext}")
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
     return None
@@ -473,6 +534,44 @@ def list_records() -> list[dict[str, Any]]:
     return items[:50]
 
 
+@app.get("/api/records/{record_id}")
+def get_record_meta(record_id: str) -> dict[str, Any]:
+    """单条记录元数据（标注页解析 video_stem / source_video）。"""
+    rid = str(record_id or "").strip()
+    if not rid:
+        raise HTTPException(400, "record_id 无效")
+    locator = _locate_record(rid)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    return _record_meta_for_list(locator)
+
+
+@app.post("/api/annotate/extract-frame")
+async def extract_frame_from_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    """浏览器无法解码时，由服务端 OpenCV 从上传视频提取首帧。"""
+    if not file.filename:
+        raise HTTPException(400, "未选择视频文件")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in VIDEO_EXTENSIONS:
+        raise HTTPException(400, f"仅支持视频: {', '.join(sorted(VIDEO_EXTENSIONS))}")
+    paths = resolve_app_paths()
+    paths.upload_dir.mkdir(parents=True, exist_ok=True)
+    tmp = paths.upload_dir / f"annotate_frame_{uuid.uuid4().hex}{suffix}"
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(400, "视频文件为空")
+        tmp.write_bytes(content)
+        validate_video_path(tmp)
+        return first_frame_base64(tmp)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 @app.delete("/api/records/{record_id}")
 def delete_record_api(record_id: str) -> dict[str, Any]:
     """删除历史记录：Parquet 包或 v1 JSON、sidecar meta、配套视频（保留 annotations/ 下标注）。"""
@@ -554,6 +653,21 @@ def get_annotation_by_video(video_stem: str) -> dict[str, Any]:
     return data
 
 
+@app.get("/api/annotations/by-video/{video_stem}/frame")
+def get_annotation_frame_by_video(video_stem: str) -> dict[str, Any]:
+    """按 video_stem 从 video_dir 提取首帧（无 pose 记录时标注页使用）。"""
+    path = _video_path_for_video_stem(video_stem)
+    if not path or not path.is_file():
+        raise HTTPException(
+            404,
+            "未找到配套视频，请将视频放入 localdata/video/ 或上传本地视频",
+        )
+    try:
+        return first_frame_base64(path)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/annotate/options")
 def list_annotate_options() -> list[dict[str, Any]]:
     """标注页下拉：全部 pose 记录 + 仅存在于 annotations 目录的条目。"""
@@ -567,13 +681,16 @@ def list_annotate_options() -> list[dict[str, Any]]:
         record_id = locator.record_id
         video_stem = meta.get("video_stem") or record_id
         seen_stems.add(video_stem)
+        has_disk_video = bool(_video_path_for_record(record_id)) or bool(
+            _video_path_for_video_stem(video_stem)
+        )
         items.append({
             "video_stem": video_stem,
             "display_name": meta.get("display_name") or video_stem,
             "record_id": record_id,
             "pose_file": meta.get("pose_file") or record_id,
             "source_video": meta.get("source_video") or "",
-            "has_video": bool(meta.get("has_video")),
+            "has_video": bool(meta.get("has_video")) or has_disk_video,
             "has_stored_annotation": bool(meta.get("has_stored_annotation")),
         })
 
