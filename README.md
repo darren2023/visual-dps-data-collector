@@ -18,7 +18,7 @@ python server.py
 
 | 页签 | 功能 |
 |------|------|
-| **采集** | 上传视频 → 推理 → **仅保存 JSON** 到 `localdata/json/`，原视频处理完即删 |
+| **采集** | 上传视频 + **必填货框标注**（上传 JSON 或标注页已存）→ 推理并**落盘碰撞事件** → JSON 至 `localdata/json/`，原视频处理完即删 |
 | **回放** | 导入 JSON；需叠加画面时再上传视频（临时文件，离开回放页/暂停/播完会删除） |
 
 ## 配置（`config.json`，对齐 visual-dps）
@@ -84,13 +84,15 @@ python collect_pose.py --video test.mp4 --backend rtmpose_t
 
 未指定 `-o` 时写入 `paths.json_dir/{视频主名}_{backend}.json`（如 `test.mp4` → `test_rtmpose_t.json`）。
 
-带碰撞检测（上传 visual-dps 格式标注 JSON）：
+采集须带有效货框标注（上传 JSON 或 `localdata/json/annotations/{视频主名}.json`）：
 
 ```bash
 python collect_pose.py --video test.mp4 --annotation path/to/boxes.json
+# 或先在 Web「标注」页保存后：
+python collect_pose.py --video test.mp4
 ```
 
-Web 采集页可同时上传「视频 + 标注 JSON」。
+Web 采集页：无本地标注时会提示去「标注」页或上传 JSON，服务端拒绝无标注采集。
 
 ## 碰撞检测（与 visual-dps event-worker 一致）
 

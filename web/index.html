@@ -62,10 +62,10 @@
           <input type="checkbox" id="collect-save-video" checked />
           <span>保存配套视频至 <code>localdata/video</code>（默认开启，与 JSON 同记录关联）</span>
         </label>
-        <label>标注 JSON（可选，visual-dps / box_human_det 格式）
+        <label>标注 JSON（必填其一：本地上传或已在标注页保存）
           <input type="file" id="collect-annotation" accept=".json,application/json" />
         </label>
-        <p class="hint field-hint">每个视频仅保留<strong>一份</strong>标注（按视频主名绑定）。上传 JSON 或在「标注」页保存会<strong>覆盖</strong>旧文件；采集时若未上传则自动使用已存标注。启用碰撞检测（手腕 vs 货框）。</p>
+        <p id="collect-annotation-hint" class="hint field-hint">按视频主名绑定一份标注。未上传时将检查 <code>localdata/json/annotations/{主名}.json</code>；若无标注请先 <button type="button" id="collect-goto-annotate" class="link-btn">去标注页</button> 或上传 JSON。采集将<strong>强制</strong>计算并保存碰撞/告警事件。</p>
         <button type="submit" id="collect-btn">开始采集</button>
       </form>
       <div id="collect-status" class="status hidden"></div>
@@ -156,7 +156,7 @@
 
   <script src="previewLayout.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=10"></script>
   <script src="annotate.js?v=3"></script>
 </body>
 </html>

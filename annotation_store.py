@@ -170,3 +170,26 @@ def load_annotation_for_collect(
     if dest.is_file():
         return dest
     return None
+
+
+def require_annotation_for_collect(
+    video_stem: str,
+    *,
+    annotation_dir: Path,
+    upload_path: Path | None = None,
+) -> Path:
+    """采集前必须能解析到有效货框标注，否则无法计算并落盘碰撞事件。"""
+    path = load_annotation_for_collect(
+        video_stem,
+        annotation_dir=annotation_dir,
+        upload_path=upload_path,
+    )
+    if path is None:
+        raise FileNotFoundError(
+            "采集前须提供货框标注：上传标注 JSON，或在「标注」页按视频主名保存后再采集"
+        )
+    data = load_annotation_config(path)
+    _, err = validate_annotation_payload(data)
+    if err:
+        raise ValueError(err)
+    return path

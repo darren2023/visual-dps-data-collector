@@ -99,6 +99,7 @@ def _scaled_boxes_for_pose(
 
 
 def _frames_need_collision_recompute(frames: list[dict[str, Any]]) -> bool:
+    """仅当帧内完全无碰撞字段、或字段恒为空且未在采集时启用碰撞时才离线重算。"""
     if not frames:
         return False
     for fr in frames:
@@ -106,9 +107,23 @@ def _frames_need_collision_recompute(frames: list[dict[str, Any]]) -> bool:
             continue
         if fr.get("collisions") or fr.get("alarm_collisions"):
             return False
-        if "collisions" in fr or "alarm_collisions" in fr:
-            return False
     return True
+
+
+def _excel_cell(value: Any) -> Any:
+    """Parquet/numpy 标量转为 openpyxl 可写入类型。"""
+    if value is None:
+        return None
+    try:
+        import numpy as np
+
+        if isinstance(value, np.generic):
+            return value.item()
+    except ImportError:
+        pass
+    if isinstance(value, (list, tuple)):
+        return ";".join(str(v) for v in value if v is not None and str(v).strip())
+    return value
 
 
 def enrich_frames_with_collision(
@@ -224,15 +239,15 @@ def _append_person_row(
     out = list(row)
     out.extend(
         [
-            frame.get("frame_idx"),
-            frame.get("source_frame_idx"),
-            frame.get("timestamp_sec"),
-            person.get("person_id"),
-            person.get("person_track_id"),
-            bbox[0] if len(bbox) > 0 else None,
-            bbox[1] if len(bbox) > 1 else None,
-            bbox[2] if len(bbox) > 2 else None,
-            bbox[3] if len(bbox) > 3 else None,
+            _excel_cell(frame.get("frame_idx")),
+            _excel_cell(frame.get("source_frame_idx")),
+            _excel_cell(frame.get("timestamp_sec")),
+            _excel_cell(person.get("person_id")),
+            _excel_cell(person.get("person_track_id")),
+            _excel_cell(bbox[0] if len(bbox) > 0 else None),
+            _excel_cell(bbox[1] if len(bbox) > 1 else None),
+            _excel_cell(bbox[2] if len(bbox) > 2 else None),
+            _excel_cell(bbox[3] if len(bbox) > 3 else None),
         ]
     )
     for i in range(len(keypoint_names)):
@@ -245,8 +260,8 @@ def _append_person_row(
         [
             "是" if collisions else "否",
             "是" if alarms else "否",
-            ";".join(collisions) if collisions else "",
-            ";".join(alarms) if alarms else "",
+            ";".join(str(t) for t in collisions if t is not None and str(t).strip()),
+            ";".join(str(t) for t in alarms if t is not None and str(t).strip()),
         ]
     )
     return out
@@ -376,15 +391,15 @@ def export_pose_to_xlsx_bytes(
 
                     ev_row: list[Any] = [
                         event_type,
-                        frame.get("frame_idx"),
-                        frame.get("source_frame_idx"),
-                        frame.get("timestamp_sec"),
-                        person.get("person_id"),
-                        person.get("person_track_id"),
+                        _excel_cell(frame.get("frame_idx")),
+                        _excel_cell(frame.get("source_frame_idx")),
+                        _excel_cell(frame.get("timestamp_sec")),
+                        _excel_cell(person.get("person_id")),
+                        _excel_cell(person.get("person_track_id")),
                         hit.get("wrist"),
                         token,
-                        hit.get("x"),
-                        hit.get("y"),
+                        _excel_cell(hit.get("x")),
+                        _excel_cell(hit.get("y")),
                     ]
                     kpts = person.get("keypoints") or []
                     for i in range(len(keypoint_names)):
@@ -405,9 +420,9 @@ def export_pose_to_xlsx_bytes(
                 ws_ev.append(
                     [
                         "碰撞" if token not in frame_alarms else "告警",
-                        frame.get("frame_idx"),
-                        frame.get("source_frame_idx"),
-                        frame.get("timestamp_sec"),
+                        _excel_cell(frame.get("frame_idx")),
+                        _excel_cell(frame.get("source_frame_idx")),
+                        _excel_cell(frame.get("timestamp_sec")),
                         None,
                         None,
                         "",

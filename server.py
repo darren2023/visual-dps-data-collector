@@ -22,9 +22,9 @@ from fastapi.staticfiles import StaticFiles
 
 from annotation_store import (
     annotation_path_for_video_stem,
-    load_annotation_for_collect,
     load_annotation_json,
     normalize_annotation_payload,
+    require_annotation_for_collect,
     resolve_video_stem_from_record,
     save_annotation_json,
     validate_annotation_payload,
@@ -706,6 +706,8 @@ def export_record_xlsx(record_id: str) -> Response:
         )
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"导出失败: {exc}") from exc
 
     filename = f"{record_id}_skeleton.xlsx"
     return Response(
@@ -905,7 +907,7 @@ async def collect_video(
             shutil.copyfileobj(annotation.file, out)
 
     try:
-        annotation_path = load_annotation_for_collect(
+        annotation_path = require_annotation_for_collect(
             video_stem,
             annotation_dir=paths.annotation_dir,
             upload_path=upload_ann_path,

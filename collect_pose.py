@@ -12,12 +12,14 @@ from pathlib import Path
 
 from collect_core import run_collect_job, validate_video_path
 from collect_core import parse_variant as _parse_variant
+from annotation_store import require_annotation_for_collect
 from config_loader import (
     build_settings,
     load_config_file,
     record_video_path,
     resolve_app_paths,
     resolve_config_path,
+    sanitize_file_stem,
 )
 from pose_store import meta_sidecar_path
 
@@ -72,7 +74,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--annotation",
         "-a",
         default=None,
-        help="visual-dps 格式标注 JSON（启用碰撞检测）",
+        help="visual-dps 标注 JSON；未指定则使用 annotations/{视频主名}.json（必填其一）",
     )
     p.add_argument(
         "--no-save-video",
@@ -125,9 +127,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"📦 姿态: {settings.backend} · 检测: {settings.det_backend}")
     print(f"⏱️ 采集节拍 frame_rate={settings.frame_rate}（0=全速）")
     print(f"🎬 保存配套视频: {'是' if settings.save_video else '否'}")
-    annotation_path = args.annotation
-    if annotation_path:
-        print(f"📐 标注 JSON: {annotation_path}")
+    paths = resolve_app_paths(load_config_file(resolve_config_path(args.config)))
+    video_stem = sanitize_file_stem(video_path.stem)
+    upload_ann: Path | None = None
+    if args.annotation:
+        upload_ann = Path(args.annotation).resolve()
+        if not upload_ann.is_file():
+            print(f"❌ 标注文件不存在: {upload_ann}", file=sys.stderr)
+            return 2
+    try:
+        ann_resolved = require_annotation_for_collect(
+            video_stem,
+            annotation_dir=paths.annotation_dir,
+            upload_path=upload_ann,
+        )
+    except FileNotFoundError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+    annotation_path = str(ann_resolved)
+    print(f"📐 标注: {annotation_path}")
     t0 = time.perf_counter()
     data = run_collect_job(
         video_path=video_path,
@@ -147,14 +168,16 @@ def main(argv: list[str] | None = None) -> int:
         alarm_cooldown_frames=settings.alarm_cooldown_frames,
     )
     pose_path = Path(settings.output)
-    if annotation_path:
-        ann_src = Path(annotation_path)
-        if ann_src.is_file():
-            rid = pose_path.name if pose_path.is_dir() else pose_path.stem
-            ann_dest = pose_path.parent / f"{rid}_annotation.json" if pose_path.is_dir() else pose_path.with_name(f"{pose_path.stem}_annotation.json")
-            shutil.copy2(ann_src, ann_dest)
+    ann_src = Path(annotation_path)
+    if ann_src.is_file():
+        rid = pose_path.name if pose_path.is_dir() else pose_path.stem
+        ann_dest = (
+            pose_path.parent / f"{rid}_annotation.json"
+            if pose_path.is_dir()
+            else pose_path.with_name(f"{pose_path.stem}_annotation.json")
+        )
+        shutil.copy2(ann_src, ann_dest)
     if settings.save_video:
-        paths = resolve_app_paths(load_config_file(resolve_config_path(args.config)))
         dest = record_video_path(paths, pose_path, video_path.suffix)
         shutil.copy2(video_path, dest)
         record_id = pose_path.name if pose_path.is_dir() else pose_path.stem

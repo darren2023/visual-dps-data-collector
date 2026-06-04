@@ -244,19 +244,40 @@ async function loadAnnotateRecordSelect() {
 window.loadRecordsForAnnotate = loadAnnotateRecordSelect;
 
 // --- 标签页 ---
+/** 切离回放页：仅暂停，保留视频源、事件列表与画布叠加 */
+function suspendPlaybackOnTabLeave() {
+  stopPlayback();
+}
+
+/** 回到回放页：恢复导出链接、事件 UI 与当前帧叠加 */
+function restorePlaybackPanelUi() {
+  if (!poseData && !currentRecordId) return;
+  const exportLink = $("#playback-export-xlsx");
+  if (exportLink && currentRecordId) {
+    exportLink.href = `/api/records/${encodeURIComponent(currentRecordId)}/export.xlsx`;
+    exportLink.download = `${currentRecordId}_skeleton.xlsx`;
+    exportLink.classList.remove("hidden");
+  }
+  renderEventJumpList();
+  renderEventMarkers();
+  redrawCurrentFrame();
+  if (currentRecordId && !videoEl.getAttribute("src")) {
+    void loadSavedRecordVideo(currentRecordId);
+  }
+}
+
 tabs.forEach((btn) => {
   btn.addEventListener("click", () => {
     const leavingPlayback = panels.playback.classList.contains("active") && btn.dataset.tab !== "playback";
     if (leavingPlayback) {
-      stopPlayback();
-      cleanupPlaybackVideo();
-      clearVideoElement();
+      suspendPlaybackOnTabLeave();
     }
     tabs.forEach((b) => b.classList.toggle("active", b === btn));
     Object.values(panels).forEach((p) => p.classList.remove("active"));
     panels[btn.dataset.tab].classList.add("active");
     if (btn.dataset.tab === "collect") loadRecords();
     if (btn.dataset.tab === "annotate") loadAnnotateRecordSelect();
+    if (btn.dataset.tab === "playback") restorePlaybackPanelUi();
   });
 });
 
@@ -265,6 +286,80 @@ const collectForm = $("#collect-form");
 const collectStatus = $("#collect-status");
 const collectResult = $("#collect-result");
 const collectBtn = $("#collect-btn");
+const collectAnnotationHint = $("#collect-annotation-hint");
+
+function videoStemFromFilename(name) {
+  const base = String(name || "").trim();
+  if (!base) return "";
+  const dot = base.lastIndexOf(".");
+  return (dot > 0 ? base.slice(0, dot) : base).trim();
+}
+
+function switchToTab(tabId) {
+  const btn = document.querySelector(`.tab[data-tab="${tabId}"]`);
+  if (btn) btn.click();
+}
+
+function openAnnotateForVideoStem(stem) {
+  const s = String(stem || "").trim();
+  switchToTab("annotate");
+  const stemEl = document.querySelector("#annotate-stem");
+  if (stemEl && s) stemEl.value = s;
+  if (typeof loadAnnotateRecordSelect === "function") loadAnnotateRecordSelect();
+}
+
+async function resolveCollectAnnotationSource(file, annFile) {
+  if (annFile) return { ok: true, source: "upload" };
+  const stem = videoStemFromFilename(file?.name);
+  if (!stem) return { ok: false, stem: "", message: "无法从视频文件名解析主名" };
+  try {
+    const res = await fetch(`/api/annotations/by-video/${encodeURIComponent(stem)}`);
+    if (res.ok) return { ok: true, source: "stored", stem };
+  } catch {
+    /* ignore */
+  }
+  return {
+    ok: false,
+    stem,
+    message: `视频主名「${stem}」尚无标注：请上传标注 JSON，或到「标注」页保存后再采集`,
+  };
+}
+
+async function refreshCollectAnnotationHint() {
+  if (!collectAnnotationHint) return;
+  const file = $("#collect-file")?.files?.[0];
+  const annFile = $("#collect-annotation")?.files?.[0];
+  if (!file) {
+    collectAnnotationHint.innerHTML =
+      '按视频主名绑定一份标注。未上传时将检查 <code>localdata/json/annotations/{主名}.json</code>；若无标注请先 <button type="button" class="link-btn collect-goto-annotate">去标注页</button> 或上传 JSON。采集将<strong>强制</strong>计算并保存碰撞/告警事件。';
+    return;
+  }
+  const check = await resolveCollectAnnotationSource(file, annFile);
+  if (check.ok) {
+    const via =
+      check.source === "upload"
+        ? "将使用本次上传的标注 JSON"
+        : `将使用已存标注（<code>annotations/${check.stem}.json</code>）`;
+    collectAnnotationHint.innerHTML = `✅ ${via}，采集时会计算并保存碰撞/告警。`;
+    return;
+  }
+  const stemEsc = String(check.stem || "").replace(/"/g, "&quot;");
+  collectAnnotationHint.innerHTML = `⚠️ ${check.message} <button type="button" class="link-btn collect-goto-annotate" data-stem="${stemEsc}">去标注「${check.stem}」</button>`;
+}
+
+collectAnnotationHint?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".collect-goto-annotate");
+  if (!btn) return;
+  const file = $("#collect-file")?.files?.[0];
+  openAnnotateForVideoStem(btn.dataset.stem || videoStemFromFilename(file?.name));
+});
+
+$("#collect-file")?.addEventListener("change", () => {
+  void refreshCollectAnnotationHint();
+});
+$("#collect-annotation")?.addEventListener("change", () => {
+  void refreshCollectAnnotationHint();
+});
 
 function showStatus(html, isError = false) {
   collectStatus.classList.remove("hidden", "error");
@@ -297,6 +392,14 @@ collectForm.addEventListener("submit", async (e) => {
   const file = $("#collect-file").files[0];
   if (!file) return;
 
+  const annFile = $("#collect-annotation").files[0];
+  const annCheck = await resolveCollectAnnotationSource(file, annFile);
+  if (!annCheck.ok) {
+    showStatus(`❌ ${annCheck.message}`, true);
+    void refreshCollectAnnotationHint();
+    return;
+  }
+
   const fd = new FormData();
   fd.append("file", file);
   fd.append("backend", $("#collect-backend").value);
@@ -307,12 +410,17 @@ collectForm.addEventListener("submit", async (e) => {
   fd.append("pose_frame_interval", $("#collect-interval").value || "1");
   fd.append("max_pose_frames", $("#collect-max").value || "0");
   fd.append("save_video", $("#collect-save-video").checked ? "1" : "0");
-  const annFile = $("#collect-annotation").files[0];
   if (annFile) fd.append("annotation", annFile);
 
   collectBtn.disabled = true;
   const savingVideo = $("#collect-save-video").checked;
-  showStatus(savingVideo ? "上传并推理中…（将保存 JSON 与配套视频）" : "上传并推理中…（仅保存 JSON）");
+  const annNote =
+    annCheck.source === "stored" ? "（已存标注 + 碰撞事件）" : "（上传标注 + 碰撞事件）";
+  showStatus(
+    savingVideo
+      ? `上传并推理中${annNote}…（将保存 JSON 与配套视频）`
+      : `上传并推理中${annNote}…（仅保存 JSON）`
+  );
 
   try {
     const res = await fetch("/api/collect", { method: "POST", body: fd });
@@ -324,7 +432,11 @@ collectForm.addEventListener("submit", async (e) => {
     collectResult.classList.remove("hidden");
     const hasVideo = job.has_video || savingVideo;
     const hasAnn = job.has_annotation || body.has_annotation;
-    const annNote = body.annotation_auto ? " · 已自动关联已存标注" : hasAnn ? " · 含碰撞检测" : "";
+    const annNote = body.annotation_auto
+      ? " · 已关联已存标注 · 碰撞已落盘"
+      : hasAnn
+        ? " · 碰撞已落盘"
+        : "";
     collectResult.innerHTML = `
       <p>✅ 已保存至 <code>localdata/json</code>${hasVideo ? " 与 <code>localdata/video</code>" : ""}${annNote}，共 <strong>${job.frame_count ?? "?"}</strong> 帧</p>
       <p>
