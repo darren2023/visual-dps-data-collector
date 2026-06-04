@@ -353,6 +353,30 @@ const collectStatus = $("#collect-status");
 const collectResult = $("#collect-result");
 const collectBtn = $("#collect-btn");
 const collectAnnotationStatus = $("#collect-annotation-status");
+const collectOcrStatus = $("#collect-ocr-status");
+let collectOcrMatchId = null;
+
+function setCollectOcrStatus(html, className = "") {
+  if (!collectOcrStatus) return;
+  collectOcrStatus.classList.remove("hidden", "is-loading", "is-ok", "is-error");
+  if (className) collectOcrStatus.classList.add(className);
+  collectOcrStatus.innerHTML = html;
+}
+
+async function loadOcrConfigDefaults() {
+  try {
+    const res = await fetch("/api/config/ocr");
+    if (!res.ok) return;
+    const body = await res.json();
+    const sel = $("#collect-ocr-engine");
+    if (sel && body.engine) sel.value = body.engine;
+    if (!body.available) {
+      setCollectOcrStatus("⚠️ 服务端未加载 corner_label 模块", "is-error");
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 function videoStemFromFilename(name) {
   const base = String(name || "").trim();
@@ -375,6 +399,7 @@ function openAnnotateForVideoStem(stem) {
 }
 
 async function resolveCollectAnnotationSource(file, annFile) {
+  if (collectOcrMatchId) return { ok: true, source: "ocr" };
   if (annFile) return { ok: true, source: "upload" };
   const stem = videoStemFromFilename(file?.name);
   if (!stem) return { ok: false, stem: "", message: "无法从视频文件名解析主名" };
@@ -404,9 +429,11 @@ async function refreshCollectAnnotationHint() {
   const check = await resolveCollectAnnotationSource(file, annFile);
   if (check.ok) {
     const via =
-      check.source === "upload"
-        ? "将使用本次上传的标注 JSON"
-        : `将使用已存标注（<code>annotations/${check.stem}.json</code>）`;
+      check.source === "ocr"
+        ? "将使用 OCR 匹配的标注 JSON"
+        : check.source === "upload"
+          ? "将使用本次上传的标注 JSON"
+          : `将使用已存标注（<code>annotations/${check.stem}.json</code>）`;
     collectAnnotationStatus.innerHTML = `✅ ${via}，采集时会计算并保存碰撞/告警。`;
     return;
   }
@@ -422,7 +449,39 @@ collectAnnotationStatus?.addEventListener("click", (e) => {
 });
 
 $("#collect-file")?.addEventListener("change", () => {
+  collectOcrMatchId = null;
+  setCollectOcrStatus("");
+  collectOcrStatus?.classList.add("hidden");
   void refreshCollectAnnotationHint();
+});
+
+$("#collect-ocr-run")?.addEventListener("click", async () => {
+  const file = $("#collect-file")?.files?.[0];
+  if (!file) {
+    setCollectOcrStatus("请先选择视频", "is-error");
+    return;
+  }
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("ocr_engine", $("#collect-ocr-engine")?.value || "paddle");
+  setCollectOcrStatus("正在 OCR 识别机位（同一环境 CPU Paddle）…", "is-loading");
+  collectOcrMatchId = null;
+  try {
+    const res = await fetch("/api/collect/ocr-match", { method: "POST", body: fd });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok || !body.match_id) {
+      throw new Error(body.detail || body.message || (await res.text()) || res.statusText);
+    }
+    collectOcrMatchId = body.match_id;
+    const files = (body.json_files_display || body.json_files || []).join(", ");
+    setCollectOcrStatus(
+      `✅ 机位 <strong>${body.corner_label}</strong> → ${files || "标注已装配"}`,
+      "is-ok"
+    );
+    void refreshCollectAnnotationHint();
+  } catch (err) {
+    setCollectOcrStatus(`❌ ${err.message || err}（详见 server 控制台 [corner-ocr]）`, "is-error");
+  }
 });
 $("#collect-annotation")?.addEventListener("change", () => {
   void refreshCollectAnnotationHint();
@@ -478,6 +537,7 @@ collectForm.addEventListener("submit", async (e) => {
   fd.append("max_pose_frames", $("#collect-max").value || "0");
   fd.append("save_video", $("#collect-save-video").checked ? "1" : "0");
   if (annFile) fd.append("annotation", annFile);
+  if (collectOcrMatchId) fd.append("ocr_match_id", collectOcrMatchId);
   const collisionCfg = readCollisionConfigFromForm();
   saveCollisionConfigToStorage(collisionCfg);
   fd.append("alarm_min_consecutive_frames", String(collisionCfg.alarm_min_consecutive_frames));
@@ -486,7 +546,11 @@ collectForm.addEventListener("submit", async (e) => {
   collectBtn.disabled = true;
   const savingVideo = $("#collect-save-video").checked;
   const annNote =
-    annCheck.source === "stored" ? "（已存标注 + 碰撞事件）" : "（上传标注 + 碰撞事件）";
+    annCheck.source === "ocr"
+      ? "（OCR 标注 + 碰撞事件）"
+      : annCheck.source === "stored"
+        ? "（已存标注 + 碰撞事件）"
+        : "（上传标注 + 碰撞事件）";
   showStatus(
     savingVideo
       ? `上传并推理中${annNote}…（将保存 JSON 与配套视频）`
@@ -1699,6 +1763,7 @@ seekBar.addEventListener("input", async () => {
 bindStageLayoutWatch();
 loadRecords();
 void loadInferenceConfigDefaults();
+void loadOcrConfigDefaults();
 updatePlaybackLoadButton();
 
 $("#playback-load-record")?.addEventListener("click", () => {

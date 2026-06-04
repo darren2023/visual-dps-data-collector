@@ -1,5 +1,5 @@
 opencv-python-headless>=4.8.0
-numpy>=1.24.0
+numpy>=1.24.0,<2
 # 默认 GPU 推理（与 visual-dps inference-lite-gpu 一致）
 # 勿与 onnxruntime（CPU 版）同时安装，否则 import 到 CPU 包、无 CUDAExecutionProvider
 onnxruntime-gpu>=1.20.0

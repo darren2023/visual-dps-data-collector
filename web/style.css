@@ -428,6 +428,31 @@ h2 {
   display: none;
 }
 
+.annotation-status.is-loading {
+  color: #93c5fd;
+}
+
+.annotation-status.is-ok {
+  color: #86efac;
+}
+
+.annotation-status.is-error {
+  color: #fca5a5;
+}
+
+.collect-ocr-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.collect-ocr-engine-label {
+  flex: 0 0 auto;
+  min-width: 10rem;
+}
+
 .inline-tip-row {
   display: flex;
   align-items: center;

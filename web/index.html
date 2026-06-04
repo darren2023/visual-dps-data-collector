@@ -90,9 +90,23 @@
             <button type="button" class="field-tip" data-tip="默认开启：将源视频副本与骨架 JSON 同一记录关联保存，便于回放页加载。">?</button>
           </span>
         </label>
+        <div class="collect-ocr-row">
+          <label class="collect-ocr-engine-label">
+            <span class="label-with-tip">OCR 引擎
+              <button type="button" class="field-tip" data-tip="与骨架采集同一 Python 环境。推荐 CPU 版 Paddle（requirements-ocr.txt）。识别视频画面机位标签并对照 reflection.json 装配标注。">?</button>
+            </span>
+            <select id="collect-ocr-engine">
+              <option value="paddle" selected>paddle（CPU，推荐）</option>
+              <option value="easy">easyocr</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+          <button type="button" id="collect-ocr-run" class="secondary-btn">识别机位并匹配标注</button>
+        </div>
+        <p id="collect-ocr-status" class="annotation-status hint hidden" role="status"></p>
         <label>
-          <span class="label-with-tip">标注 JSON（必填其一：本地上传或标注页已保存）
-            <button type="button" class="field-tip" data-tip="按视频主名绑定一份货位标注。未上传时检查 localdata/json/annotations/{主名}.json。采集将强制计算并保存碰撞/告警事件。">?</button>
+          <span class="label-with-tip">标注 JSON（必填其一：OCR 匹配 / 本地上传 / 标注页已保存）
+            <button type="button" class="field-tip" data-tip="按视频主名绑定货位标注。可用「识别机位」按 reflection 自动装配；或上传 JSON；或检查 localdata/json/annotations/{主名}.json。">?</button>
           </span>
           <input type="file" id="collect-annotation" accept=".json,application/json" />
         </label>
@@ -274,7 +288,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
   <script src="annotateGeometry.js"></script>
   <script src="annotateVisualMode.js"></script>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=19"></script>
   <script src="annotate.js?v=10"></script>
 </body>
 </html>
