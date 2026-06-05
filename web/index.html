@@ -230,14 +230,20 @@
     </section>
 
     <section id="panel-playback" class="panel">
-      <div class="playback-records-toolbar">
-        <h2 class="playback-records-heading heading-with-tip">
-          已保存记录
-          <button type="button" class="field-tip" data-tip="单击一条记录选中，再点「加载并回放」；双击记录行可直接加载。右侧可进行下载、导出 Excel、标注或删除。">?</button>
-        </h2>
-        <button type="button" id="playback-load-record" class="primary-btn" disabled>加载并回放</button>
+      <div class="playback-records-panel">
+        <div class="playback-records-toolbar">
+          <h2 class="playback-records-heading heading-with-tip">
+            已保存记录
+            <button type="button" class="field-tip" data-tip="单击选中，点「加载并回放」或双击行直接加载。机位分组可折叠；列表过长时可搜索或展开更多。">?</button>
+          </h2>
+          <button type="button" id="playback-load-record" class="primary-btn" disabled>加载并回放</button>
+        </div>
+        <div class="playback-records-filter">
+          <input type="search" id="playback-record-filter" placeholder="搜索名称 / 路径…" autocomplete="off" />
+          <span id="playback-record-count" class="hint"></span>
+        </div>
+        <div id="session-list" class="playback-records-list"></div>
       </div>
-      <ul id="session-list" class="session-list"></ul>
 
       <details class="playback-import-details">
         <summary>手动导入 JSON / 视频</summary>
@@ -264,7 +270,7 @@
       </details>
 
       <div class="stage-wrap">
-        <video id="playback-video-el" playsinline controls controlsList="nofullscreen" preload="metadata"></video>
+        <video id="playback-video-el" playsinline preload="metadata"></video>
         <canvas id="playback-canvas"></canvas>
       </div>
       <div class="playback-transport">
@@ -305,7 +311,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
   <script src="annotateGeometry.js"></script>
   <script src="annotateVisualMode.js"></script>
-  <script src="app.js?v=27"></script>
+  <script src="app.js?v=28"></script>
   <script src="annotate.js?v=10"></script>
 </body>
 </html>

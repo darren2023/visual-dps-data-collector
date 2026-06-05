@@ -880,33 +880,58 @@ collectBatchBtn?.addEventListener("click", async () => {
   }
 });
 
+const RECORDS_VISIBLE_PER_GROUP = 8;
+/** 机位分组展开条数上限（groupKey -> limit） */
+const recordGroupVisibleLimits = new Map();
+let playbackRecordsCache = [];
+
+function recordItemEsc(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;");
+}
+
+function recordSearchBlob(s) {
+  const name = s.display_name || s.record_id || "";
+  return `${name} ${s.record_id || ""} ${s.video_stem || ""} ${s.camera_label || ""} ${s.camera_slug || ""}`.toLowerCase();
+}
+
 function renderRecordItem(s) {
   const name = s.display_name || s.record_id;
-  const jsonFile = s.pose_label || s.pose_file || `${s.record_id}.json`;
-  const esc = (v) =>
-    String(v ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/"/g, "&quot;");
-  const ridEnc = encodeURIComponent(s.record_id);
+  const jsonFile = s.pose_label || s.pose_file || `${s.record_id}/manifest.json`;
+  const esc = recordItemEsc;
+  const badges = [];
+  if (s.frame_count != null) badges.push(`${s.frame_count} 帧`);
+  if (s.has_video) badges.push("视频");
+  if (s.has_stored_annotation || s.collision_enabled) badges.push("标注");
+  if (s.collision_enabled) badges.push("碰撞");
+  const badgeHtml = badges.map((b) => `<span class="record-badge">${b}</span>`).join("");
   return `
-      <li class="record-item" data-record-id="${esc(s.record_id)}" data-display-name="${esc(name)}" data-pose-file="${esc(jsonFile)}" data-has-video="${s.has_video ? "1" : "0"}">
-        <div class="record-main">
-          <span class="record-tag">名称</span>
-          <strong class="record-name">${name}</strong>
-          <span class="record-tag">骨架 JSON</span>
-          <code class="record-json">${jsonFile}</code>
-          <span class="record-meta">${s.backend || "?"}${s.det_backend ? ` · ${s.det_backend}` : ""} · ${s.frame_count ?? "?"} 帧${s.has_video ? ' · <span class="record-badge">有视频</span>' : ""}${s.has_stored_annotation || s.collision_enabled ? ' · <span class="record-badge">标注</span>' : ""}${s.collision_enabled ? ' · <span class="record-badge">碰撞</span>' : ""}</span>
+      <li class="record-item record-item-compact" data-record-id="${esc(s.record_id)}" data-display-name="${esc(name)}" data-pose-file="${esc(jsonFile)}" data-has-video="${s.has_video ? "1" : "0"}" data-search="${esc(recordSearchBlob(s))}">
+        <div class="record-main record-main-compact">
+          <strong class="record-name" title="${esc(name)}">${name}</strong>
+          <span class="record-meta-inline">${badgeHtml}</span>
         </div>
-        <span class="record-actions">
-          <a href="${recordApiUrl(s.record_id, "/manifest.json")}" download title="${jsonFile}">下载</a>
-          <a href="${recordApiUrl(s.record_id, "/export.xlsx")}" download title="导出 COCO-17 骨架 Excel">导出 Excel</a>
+        <span class="record-actions record-actions-compact">
+          <a href="${recordApiUrl(s.record_id, "/manifest.json")}" download title="${esc(jsonFile)}">JSON</a>
+          <a href="${recordApiUrl(s.record_id, "/export.xlsx")}" download title="导出 Excel">XLSX</a>
           ${s.has_video ? `<button type="button" data-annotate="${esc(s.record_id)}" data-stem="${esc(s.video_stem || name)}">标注</button>` : ""}
-          <button type="button" class="danger-btn" data-delete="${esc(s.record_id)}" data-name="${esc(name)}">删除</button>
+          <button type="button" class="danger-btn" data-delete="${esc(s.record_id)}" data-name="${esc(name)}">删</button>
         </span>
       </li>`;
 }
 
 function bindRecordListEvents(list) {
+  list.querySelectorAll(".record-show-more").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = btn.dataset.groupKey;
+      const total = parseInt(btn.dataset.groupTotal || "0", 10);
+      if (key && total > 0) recordGroupVisibleLimits.set(key, total);
+      renderPlaybackRecordsList(playbackRecordsCache);
+    });
+  });
   list.querySelectorAll(".record-item").forEach((li) => {
     li.addEventListener("click", (e) => {
       if (e.target.closest("a, button")) return;
@@ -963,43 +988,98 @@ function bindRecordListEvents(list) {
   });
 }
 
+function renderPlaybackRecordsList(items) {
+  const list = $("#session-list");
+  const countEl = $("#playback-record-count");
+  const filterQ = String($("#playback-record-filter")?.value || "")
+    .trim()
+    .toLowerCase();
+  if (!items.length) {
+    list.innerHTML = "<p class='hint playback-records-empty'>暂无记录（请先在采集页完成采集）</p>";
+    if (countEl) countEl.textContent = "";
+    selectedPlaybackRecord = null;
+    updatePlaybackLoadButton();
+    return;
+  }
+  const filtered = filterQ
+    ? items.filter((s) => recordSearchBlob(s).includes(filterQ))
+    : items;
+  if (countEl) {
+    countEl.textContent = filterQ
+      ? `显示 ${filtered.length} / ${items.length} 条`
+      : `共 ${items.length} 条`;
+  }
+  if (!filtered.length) {
+    list.innerHTML = "<p class='hint playback-records-empty'>无匹配记录</p>";
+    bindRecordListEvents(list);
+    return;
+  }
+  const groups = new Map();
+  for (const s of filtered) {
+    const key =
+      s.camera_slug ||
+      s.camera_label ||
+      (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
+      "未分类";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  list.innerHTML = keys
+    .map((key) => {
+      const groupItems = groups.get(key);
+      const total = groupItems.length;
+      const limit = recordGroupVisibleLimits.get(key) ?? Math.min(RECORDS_VISIBLE_PER_GROUP, total);
+      const visible = groupItems.slice(0, limit);
+      const hidden = total - visible.length;
+      const title = groupItems[0]?.camera_label || key;
+      const rows = visible.map(renderRecordItem).join("");
+      const openGroup =
+        keys.length === 1 ||
+        groupItems.some((s) => s.record_id === keepId) ||
+        key === (keepId.includes("/") ? keepId.split("/")[0] : "");
+      return `<details class="record-group" data-camera-slug="${recordItemEsc(key)}"${
+        openGroup ? " open" : ""
+      }>
+          <summary class="record-group-title">
+            <span class="record-group-label">机位 ${recordItemEsc(title)}</span>
+            <span class="record-group-meta"><code>${recordItemEsc(key)}</code> · ${total} 条</span>
+          </summary>
+          <ul class="session-list">${rows}</ul>
+          ${
+            hidden > 0
+              ? `<button type="button" class="record-show-more link-btn" data-group-key="${recordItemEsc(key)}" data-group-total="${total}">展开其余 ${hidden} 条</button>`
+              : ""
+          }
+        </details>`;
+    })
+    .join("");
+  bindRecordListEvents(list);
+  if (keepId) highlightPlaybackRecordInList(keepId);
+}
+
 async function loadRecords() {
   const list = $("#session-list");
-  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
   try {
     const res = await fetch("/api/records");
     const items = await res.json();
-    if (!items.length) {
-      list.innerHTML = "<li class='hint'>暂无记录（请先在采集页完成采集）</li>";
-      selectedPlaybackRecord = null;
-      updatePlaybackLoadButton();
-      return;
-    }
-    const groups = new Map();
-    for (const s of items) {
-      const key =
-        s.camera_slug ||
-        s.camera_label ||
-        (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
-        "未分类";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(s);
-    }
-    const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    list.innerHTML = keys
-      .map((key) => {
-        const rows = groups.get(key).map(renderRecordItem).join("");
-        const title = groups.get(key)[0]?.camera_label || key;
-        return `<section class="record-group" data-camera-slug="${key}">
-          <h3 class="record-group-title">机位 ${title} <code>localdata/json/${key}</code></h3>
-          <ul class="session-list">${rows}</ul>
-        </section>`;
-      })
-      .join("");
-    bindRecordListEvents(list);
+    playbackRecordsCache = items;
+    renderPlaybackRecordsList(items);
   } catch {
-    list.innerHTML = "<li class='hint'>无法加载列表</li>";
+    list.innerHTML = "<p class='hint playback-records-empty'>无法加载列表</p>";
   }
+}
+
+function initPlaybackRecordFilter() {
+  const input = $("#playback-record-filter");
+  if (!input || input.dataset.bound) return;
+  input.dataset.bound = "1";
+  let t = null;
+  input.addEventListener("input", () => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => renderPlaybackRecordsList(playbackRecordsCache), 200);
+  });
 }
 
 async function loadSavedRecordVideo(recordId) {
@@ -2094,6 +2174,7 @@ seekBar.addEventListener("input", async () => {
 
 bindStageLayoutWatch();
 loadRecords();
+initPlaybackRecordFilter();
 void loadInferenceConfigDefaults();
 void loadReflectionCameras();
 updatePlaybackLoadButton();

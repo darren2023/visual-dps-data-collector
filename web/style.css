@@ -462,23 +462,147 @@ h2 {
   cursor: pointer;
 }
 
+.playback-records-panel {
+  margin-bottom: 0.75rem;
+}
+
+.playback-records-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.playback-records-filter input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  max-width: 20rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e7ecf3;
+  font-size: 0.88rem;
+}
+
+.playback-records-list {
+  max-height: min(320px, 38vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.25rem;
+  border: 1px solid #2a3441;
+  border-radius: 8px;
+  background: #0c1220;
+}
+
+.playback-records-empty {
+  margin: 0.75rem;
+}
+
 .record-group {
-  margin: 1rem 0 0.5rem;
-  padding: 0.5rem 0.75rem;
+  margin: 0;
+  padding: 0;
   border-left: 3px solid #3b82f6;
   background: rgba(59, 130, 246, 0.06);
-  border-radius: 0 8px 8px 0;
+  border-radius: 0;
+  border-bottom: 1px solid #1e293b;
+}
+
+.record-group:last-child {
+  border-bottom: none;
 }
 
 .record-group-title {
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.88rem;
   color: #93c5fd;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  user-select: none;
+}
+
+.record-group-title::-webkit-details-marker {
+  color: #64748b;
+}
+
+.record-group-label {
+  font-weight: 600;
+}
+
+.record-group-meta {
+  font-size: 0.78rem;
+  color: #64748b;
+  font-weight: normal;
+}
+
+.record-group-meta code {
+  font-size: 0.76rem;
+  color: #7dd3fc;
 }
 
 .record-group .session-list {
   margin: 0;
-  padding: 0;
+  padding: 0 0.35rem;
+}
+
+.record-show-more {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 0.35rem 0.5rem 0.55rem;
+  font-size: 0.82rem;
+}
+
+.record-item-compact {
+  padding: 0.35rem 0.25rem !important;
+  gap: 0.5rem !important;
+}
+
+.record-main-compact {
+  flex-wrap: nowrap !important;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.record-main-compact .record-name {
+  flex: 0 1 auto;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+
+.record-meta-inline {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.record-meta-inline .record-badge {
+  display: inline;
+  margin-right: 0.35rem;
+  color: #94a3b8;
+}
+
+.record-actions-compact {
+  gap: 0.25rem !important;
+}
+
+.record-actions-compact a,
+.record-actions-compact button {
+  padding: 0.15rem 0.4rem !important;
+  font-size: 0.72rem !important;
 }
 
 .collect-preview-wrap {
@@ -824,8 +948,9 @@ main.wide {
   margin-bottom: 0.35rem;
 }
 
-#panel-playback .session-list {
-  margin-bottom: 0.75rem;
+#panel-playback .playback-records-list .session-list li:last-child,
+#panel-playback .playback-records-list .record-item:last-child {
+  border-bottom: none;
 }
 
 .record-item {
