@@ -20,6 +20,7 @@ from annotation_store import (
 )
 from collect_core import validate_video_path
 from config_loader import (
+    allocate_camera_storage_slug,
     build_settings,
     camera_storage_slug,
     default_pose_json_path,
@@ -599,15 +600,6 @@ async def collect_video(
 
     video_stem = sanitize_file_stem(Path(file.filename).stem)
     cam_norm = normalize_corner_label(camera_label) if normalize_corner_label else str(camera_label or "").strip()
-    cam_slug = camera_storage_slug(cam_norm) if cam_norm else ""
-    pose_path = default_pose_json_path(
-        paths,
-        backend=settings.backend,
-        video_stem=video_stem,
-        job_id=job_id,
-        camera_slug=cam_slug or None,
-    )
-    record_id = record_id_from_pose_path(pose_path)
 
     infer_w = int(width) if int(width) > 0 else settings.infer_width
     infer_h = int(height) if int(height) > 0 else settings.infer_height
@@ -620,7 +612,8 @@ async def collect_video(
 
     upload_ann_path: Path | None = None
     camera_match_label: str | None = None
-    camera_match_slug: str | None = cam_slug or None
+    camera_match_slug: str | None = None
+    cam_slug = ""
 
     if annotation and annotation.filename:
         ann_suffix = Path(annotation.filename).suffix.lower()
@@ -639,21 +632,24 @@ async def collect_video(
             camera_label=camera_label,
             upload_ann_path=upload_ann_path,
         )
-        if resolved_slug:
+        if resolved_slug and camera_match_label:
             camera_match_slug = resolved_slug
-            if camera_match_label:
-                cam_slug = resolved_slug
-                pose_path = default_pose_json_path(
-                    paths,
-                    backend=settings.backend,
-                    video_stem=video_stem,
-                    job_id=job_id,
-                    camera_slug=cam_slug,
-                )
-                record_id = record_id_from_pose_path(pose_path)
     except HTTPException:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
+
+    cam_for_storage = camera_match_label or cam_norm
+    if cam_for_storage:
+        cam_slug = allocate_camera_storage_slug(paths, cam_for_storage)
+        camera_match_slug = cam_slug
+    pose_path = default_pose_json_path(
+        paths,
+        backend=settings.backend,
+        video_stem=video_stem,
+        job_id=job_id,
+        camera_slug=cam_slug or None,
+    )
+    record_id = record_id_from_pose_path(pose_path)
 
     if upload_ann_path:
         ann_source = "upload"
@@ -754,7 +750,8 @@ async def collect_batch(
     cam = normalize_corner_label(camera_label) if normalize_corner_label else str(camera_label or "").strip()
     if not cam:
         raise HTTPException(400, "请填写机位标识")
-    cam_slug = camera_storage_slug(cam)
+    paths = resolve_app_paths()
+    cam_slug = allocate_camera_storage_slug(paths, cam)
 
     video_files: list[UploadFile] = []
     for f in files:
@@ -790,7 +787,6 @@ async def collect_batch(
     )
 
     batch_id = uuid.uuid4().hex[:12]
-    paths = resolve_app_paths()
     paths.upload_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = paths.upload_dir / f"batch_{batch_id}"
     tmp_dir.mkdir(parents=True, exist_ok=True)

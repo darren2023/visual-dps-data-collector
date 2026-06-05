@@ -272,6 +272,42 @@ def camera_storage_slug(camera_label: str) -> str:
     return s or "camera"
 
 
+def _bucket_dir_has_content(bucket_dir: Path) -> bool:
+    """机位 json/video 子目录是否已有数据（忽略 . 开头文件）。"""
+    if not bucket_dir.is_dir():
+        return False
+    try:
+        for p in bucket_dir.iterdir():
+            if p.name.startswith("."):
+                continue
+            return True
+    except OSError:
+        return True
+    return False
+
+
+def camera_bucket_exists(paths: AppPaths, camera_slug: str) -> bool:
+    """localdata/json 或 localdata/video 下是否已有该机位目录且非空。"""
+    slug = str(camera_slug or "").strip()
+    if not slug:
+        return False
+    return _bucket_dir_has_content(paths.json_dir / slug) or _bucket_dir_has_content(
+        paths.video_dir / slug
+    )
+
+
+def allocate_camera_storage_slug(paths: AppPaths, camera_label: str) -> str:
+    """为机位分配存储目录名；若 base 已占用则依次使用 base-(2)、base-(3)…"""
+    base = camera_storage_slug(camera_label)
+    if not camera_bucket_exists(paths, base):
+        return base
+    for n in range(2, 10_000):
+        candidate = f"{base}-({n})"
+        if not camera_bucket_exists(paths, candidate):
+            return candidate
+    raise ValueError(f"机位 {camera_label} 可用存储目录过多，请清理 localdata/json 后重试")
+
+
 def json_bucket_dir(paths: AppPaths, camera_slug: str | None) -> Path:
     """骨架数据根目录；有机位时落在 json_dir/{camera_slug}/。"""
     if camera_slug:
