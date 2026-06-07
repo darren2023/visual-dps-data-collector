@@ -26,6 +26,9 @@ let playbackEvents = [];
 /** 事件列表来自回放实时重算（非采集落盘） */
 let playbackEventsFromRealtime = false;
 let activeEventKey = null;
+/** 人工标为真的事件键（eventRowKey） */
+const verifiedTrueKeys = new Set();
+let eventReviewSaveTimer = null;
 const FRAME_CHUNK_SIZE = 120;
 const COLLISION_CFG_STORAGE_KEY = "datacollect_collision_cfg";
 let rafId = null;
@@ -1190,6 +1193,9 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   const baseHint = `【${label}】${jsonFile}（${poseData.frame_count ?? 0} 帧${storageHint}）`;
 
   const videoLoaded = await loadSavedRecordVideo(recordId);
+  if (playbackEvents.length) {
+    await beginEventReview();
+  }
   if (videoLoaded) {
     const { frameW, frameH } = getVideoFrameSize();
     const f0 = frameByTime[0];
@@ -1197,9 +1203,14 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
     if (f0 && (f0.w !== frameW || f0.h !== frameH)) {
       hint += ` JSON 推理 ${f0.w}×${f0.h}，将自动对齐。`;
     }
+    if (playbackEvents.length) {
+      hint += " · 已定位待复核事件，用「标为真 · 下一条」或 Y 键快速复核";
+    }
     setPlaybackInfo(hint);
     redrawCurrentFrame();
-    await startVideoPlayback("");
+    if (!playbackEvents.length) {
+      await startVideoPlayback("");
+    }
     return;
   }
 
@@ -1306,10 +1317,270 @@ function formatEventTokens(tokens) {
   return `${list.slice(0, 2).join(", ")} +${list.length - 2}`;
 }
 
+function isEventVerified(ev) {
+  if (!ev) return false;
+  return verifiedTrueKeys.has(eventRowKey(ev));
+}
+
+function syncVerifiedKeysFromEvents(events) {
+  verifiedTrueKeys.clear();
+  (events || []).forEach((ev) => {
+    if (ev?.verified_true) verifiedTrueKeys.add(eventRowKey(ev));
+  });
+}
+
+function applyVerifiedFlagsToEvents() {
+  playbackEvents.forEach((ev) => {
+    ev.verified_true = isEventVerified(ev);
+  });
+}
+
+function setEventVerified(ev, verified, { persist = true } = {}) {
+  const key = eventRowKey(ev);
+  if (verified) verifiedTrueKeys.add(key);
+  else verifiedTrueKeys.delete(key);
+  ev.verified_true = !!verified;
+  if (persist && currentRecordId) scheduleSaveEventReview();
+}
+
+function setEventReviewSaveStatus(text, kind = "") {
+  const el = $("#event-save-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = `event-save-status hint${kind ? ` is-${kind}` : ""}`;
+}
+
+function scheduleSaveEventReview() {
+  if (!currentRecordId) {
+    setEventReviewSaveStatus("仅已保存记录可写入复核", "error");
+    return;
+  }
+  setEventReviewSaveStatus("保存中…", "pending");
+  if (eventReviewSaveTimer) clearTimeout(eventReviewSaveTimer);
+  eventReviewSaveTimer = setTimeout(() => void saveEventReviewNow(), 450);
+}
+
+async function saveEventReviewNow() {
+  if (!currentRecordId) return;
+  const verified_true = playbackEvents
+    .filter((e) => isEventVerified(e))
+    .map((e) => ({
+      event_type: e.event_type,
+      frame_idx: e.frame_idx,
+      source_frame_idx: e.source_frame_idx ?? e.frame_idx,
+      box_tokens: [...(e.box_tokens || [])],
+    }));
+  try {
+    const res = await fetch(recordApiUrl(currentRecordId, "/event-review"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verified_true }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `保存失败 (${res.status})`);
+    }
+    const body = await res.json();
+    if (Array.isArray(body.events)) {
+      playbackEvents = body.events;
+      syncVerifiedKeysFromEvents(playbackEvents);
+    }
+    const n = body.verified_true_count ?? verified_true.length;
+    setEventReviewSaveStatus(`已保存 · 标真 ${n} 条`);
+  } catch (err) {
+    setEventReviewSaveStatus(err.message || "保存失败", "error");
+  }
+}
+
 function filteredPlaybackEvents() {
   const mode = eventFilterSelect?.value || "all";
   if (mode === "all") return playbackEvents;
-  return playbackEvents.filter((e) => e.event_type === mode);
+  if (mode === "verified") return playbackEvents.filter((e) => isEventVerified(e));
+  if (mode === "unreviewed") return playbackEvents.filter((e) => !isEventVerified(e));
+  if (mode === "alarm" || mode === "collision") {
+    return playbackEvents.filter((e) => e.event_type === mode);
+  }
+  return playbackEvents;
+}
+
+function getActiveFilteredEvent() {
+  const list = filteredPlaybackEvents();
+  if (!list.length) return null;
+  if (!activeEventKey) return list[0];
+  return list.find((e) => eventRowKey(e) === activeEventKey) || list[0];
+}
+
+function getActiveFilteredIndex() {
+  const list = filteredPlaybackEvents();
+  if (!list.length) return -1;
+  const ev = getActiveFilteredEvent();
+  if (!ev) return -1;
+  return list.findIndex((e) => eventRowKey(e) === eventRowKey(ev));
+}
+
+function navigateReviewEvent(delta) {
+  const list = filteredPlaybackEvents();
+  if (!list.length) return;
+  let idx = getActiveFilteredIndex();
+  if (idx < 0) idx = 0;
+  idx = Math.max(0, Math.min(list.length - 1, idx + delta));
+  void seekToEvent(list[idx]);
+}
+
+function scrollActiveEventRowIntoView() {
+  if (!eventJumpList || !activeEventKey) return;
+  const row = eventJumpList.querySelector(`tr[data-event-key="${CSS.escape(activeEventKey)}"]`);
+  row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function updateReviewDock() {
+  const list = filteredPlaybackEvents();
+  const ev = getActiveFilteredEvent();
+  const posEl = $("#event-review-position");
+  const badgeEl = $("#event-review-badge");
+  const metaEl = $("#event-review-meta");
+  const verifiedTag = $("#event-review-verified-tag");
+  const summaryEl = $("#event-review-list-summary");
+  const verifiedN = playbackEvents.filter((e) => isEventVerified(e)).length;
+
+  if (summaryEl) {
+    summaryEl.textContent = `全部事件列表（${playbackEvents.length} 条，已标真 ${verifiedN}）`;
+  }
+
+  if (!playbackEvents.length) {
+    if (posEl) posEl.textContent = "无事件";
+    if (metaEl) metaEl.textContent = "—";
+    verifiedTag?.classList.add("hidden");
+    return;
+  }
+
+  if (!list.length) {
+    if (posEl) posEl.textContent = "队列已清空";
+    if (metaEl) metaEl.textContent = "当前筛选下无待复核事件";
+    verifiedTag?.classList.add("hidden");
+    return;
+  }
+
+  const idx = getActiveFilteredIndex();
+  if (posEl) {
+    posEl.textContent = `第 ${idx + 1} / ${list.length} 条${list.length !== playbackEvents.length ? `（总 ${playbackEvents.length}）` : ""}`;
+  }
+
+  if (!ev) return;
+  const typeLabel = ev.event_type === "alarm" ? "告警" : "碰撞";
+  if (badgeEl) {
+    badgeEl.textContent = typeLabel;
+    badgeEl.className = `event-badge ${ev.event_type}`;
+  }
+  if (metaEl) {
+    metaEl.textContent = `${formatTime(ev.timestamp_sec)} · 帧 ${ev.frame_idx} · ${formatEventTokens(ev.box_tokens)}`;
+  }
+  if (verifiedTag) {
+    verifiedTag.classList.toggle("hidden", !isEventVerified(ev));
+  }
+}
+
+function renderEventReviewTable(list = null) {
+  if (!eventJumpList) return;
+  const rows = list ?? filteredPlaybackEvents();
+  const canSave = !!currentRecordId;
+
+  eventJumpList.innerHTML = rows
+    .map((ev) => {
+      const key = eventRowKey(ev);
+      const typeLabel = ev.event_type === "alarm" ? "告警" : "碰撞";
+      const active = key === activeEventKey ? " active" : "";
+      const verified = isEventVerified(ev);
+      const verifiedCls = verified ? " verified-true" : "";
+      const checked = verified ? " checked" : "";
+      const disabled = canSave ? "" : " disabled";
+      return `<tr class="event-review-row${active}${verifiedCls}" data-event-key="${key}">
+        <td class="col-verify"><input type="checkbox" class="event-verify-check" data-event-key="${key}"${checked}${disabled} aria-label="标为真实碰撞" /></td>
+        <td class="col-type"><span class="event-badge ${ev.event_type}">${typeLabel}</span></td>
+        <td class="col-time">${formatTime(ev.timestamp_sec)}</td>
+        <td class="col-frame">${ev.frame_idx}</td>
+        <td class="col-tokens" title="${formatEventTokens(ev.box_tokens)}">${formatEventTokens(ev.box_tokens)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  eventJumpList.querySelectorAll(".event-verify-check").forEach((input) => {
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("change", () => {
+      const key = input.dataset.eventKey;
+      const item = playbackEvents.find((row) => eventRowKey(row) === key);
+      if (!item) return;
+      setEventVerified(item, input.checked);
+      updateReviewDock();
+      renderEventReviewTable();
+      renderEventMarkers();
+    });
+  });
+
+  eventJumpList.querySelectorAll(".event-review-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.eventKey;
+      const item = playbackEvents.find((rowEv) => eventRowKey(rowEv) === key);
+      if (item) void seekToEvent(item);
+    });
+  });
+
+  scrollActiveEventRowIntoView();
+}
+
+function markActiveEventVerified(verified) {
+  const ev = getActiveFilteredEvent();
+  if (!ev) return;
+  setEventVerified(ev, verified);
+  updateReviewDock();
+  if ($("#event-review-list-details")?.open) renderEventReviewTable();
+  renderEventMarkers();
+}
+
+async function confirmTrueAndNext() {
+  const list = filteredPlaybackEvents();
+  const ev = getActiveFilteredEvent();
+  if (!ev) return;
+  const idx = getActiveFilteredIndex();
+  setEventVerified(ev, true);
+
+  const mode = eventFilterSelect?.value || "all";
+  if (mode === "unreviewed") {
+    const newList = filteredPlaybackEvents();
+    if (!newList.length) {
+      updateReviewDock();
+      renderEventReviewTable();
+      renderEventMarkers();
+      setEventReviewSaveStatus("未标真事件已全部复核", "");
+      return;
+    }
+    const nextEv = newList[Math.min(idx, newList.length - 1)];
+    await seekToEvent(nextEv);
+    return;
+  }
+
+  const nextEv = list[idx + 1];
+  if (nextEv) await seekToEvent(nextEv);
+  else {
+    updateReviewDock();
+    if ($("#event-review-list-details")?.open) renderEventReviewTable();
+    renderEventMarkers();
+  }
+}
+
+async function skipToNextEvent() {
+  navigateReviewEvent(1);
+}
+
+async function beginEventReview() {
+  if (!playbackEvents.length) return;
+  const hasUnreviewed = playbackEvents.some((e) => !isEventVerified(e));
+  if (hasUnreviewed && eventFilterSelect) {
+    eventFilterSelect.value = "unreviewed";
+  }
+  const first = filteredPlaybackEvents()[0];
+  if (first) await seekToEvent(first);
+  else updateReviewDock();
 }
 
 function renderEventMarkers() {
@@ -1322,9 +1593,11 @@ function renderEventMarkers() {
     const pct = Math.min(100, Math.max(0, (ev.timestamp_sec / dur) * 100));
     const dot = document.createElement("button");
     dot.type = "button";
-    dot.className = `event-marker ${ev.event_type}`;
+    const verifiedCls = isEventVerified(ev) ? " verified" : "";
+    dot.className = `event-marker ${ev.event_type}${verifiedCls}`;
     dot.style.left = `${pct}%`;
-    dot.title = `${ev.event_type === "alarm" ? "告警" : "碰撞"} ${formatTime(ev.timestamp_sec)} · ${formatEventTokens(ev.box_tokens)}`;
+    const verifiedNote = isEventVerified(ev) ? " · 已标真" : "";
+    dot.title = `${ev.event_type === "alarm" ? "告警" : "碰撞"} ${formatTime(ev.timestamp_sec)} · ${formatEventTokens(ev.box_tokens)}${verifiedNote}`;
     dot.addEventListener("click", (e) => {
       e.stopPropagation();
       seekToEvent(ev);
@@ -1333,52 +1606,49 @@ function renderEventMarkers() {
   });
 }
 
-function renderEventJumpList() {
-  if (!eventJumpList || !eventsPanel) return;
+function renderEventReviewList() {
+  if (!eventsPanel) return;
   const list = filteredPlaybackEvents();
   const alarmN = playbackEvents.filter((e) => e.event_type === "alarm").length;
   const collN = playbackEvents.filter((e) => e.event_type === "collision").length;
+  const verifiedN = playbackEvents.filter((e) => isEventVerified(e)).length;
 
   if (!playbackEvents.length) {
     eventsPanel.classList.add("hidden");
-    eventJumpList.innerHTML = "";
+    if (eventJumpList) eventJumpList.innerHTML = "";
     if (eventCountLabel) {
       const hint = annotationBoxes.length
         ? "无碰撞事件（已按标注实时扫描）"
         : "无事件（需采集时启用碰撞或加载标注）";
       eventCountLabel.textContent = hint;
     }
+    setEventReviewSaveStatus("");
+    updateReviewDock();
     return;
   }
 
   eventsPanel.classList.remove("hidden");
   if (eventCountLabel) {
     const rtHint = playbackEventsFromRealtime ? " · 回放实时计算" : "";
-    eventCountLabel.textContent = `告警 ${alarmN} · 碰撞 ${collN}${rtHint}${list.length !== playbackEvents.length ? ` · 显示 ${list.length}` : ""}`;
+    const filterHint = list.length !== playbackEvents.length ? ` · 队列 ${list.length}` : "";
+    eventCountLabel.textContent = `告警 ${alarmN} · 碰撞 ${collN} · 标真 ${verifiedN}${rtHint}${filterHint}`;
   }
 
-  eventJumpList.innerHTML = list
-    .map((ev) => {
-      const key = eventRowKey(ev);
-      const typeLabel = ev.event_type === "alarm" ? "告警" : "碰撞";
-      const active = key === activeEventKey ? " active" : "";
-      return `<li><button type="button" class="event-jump-btn${active}" data-event-key="${key}">
-        <span class="event-badge ${ev.event_type}">${typeLabel}</span>
-        <span>${formatTime(ev.timestamp_sec)} · 帧 ${ev.frame_idx}</span>
-        <span class="event-meta">${formatEventTokens(ev.box_tokens)}</span>
-      </button></li>`;
-    })
-    .join("");
+  if (!currentRecordId) {
+    setEventReviewSaveStatus("导入 JSON 无法保存，请从记录列表打开", "error");
+  }
 
-  eventJumpList.querySelectorAll(".event-jump-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const key = btn.dataset.eventKey;
-      const ev = playbackEvents.find((e) => eventRowKey(e) === key);
-      if (ev) seekToEvent(ev);
-    });
-  });
+  updateReviewDock();
+  if ($("#event-review-list-details")?.open) {
+    renderEventReviewTable(list);
+  } else if (eventJumpList) {
+    eventJumpList.innerHTML = "";
+  }
   renderEventMarkers();
 }
+
+/** @deprecated 兼容旧调用 */
+const renderEventJumpList = renderEventReviewList;
 
 /** 采集时是否已启用碰撞并落盘（有则信任存储字段，含空数组） */
 function collisionPersistedAtCollect() {
@@ -1459,6 +1729,8 @@ async function loadPlaybackEvents(recordId = null) {
   playbackEvents = [];
   playbackEventsFromRealtime = false;
   activeEventKey = null;
+  verifiedTrueKeys.clear();
+  setEventReviewSaveStatus("");
 
   if (recordId) {
     try {
@@ -1466,6 +1738,7 @@ async function loadPlaybackEvents(recordId = null) {
       if (res.ok) {
         const body = await res.json();
         playbackEvents = Array.isArray(body.events) ? body.events : [];
+        syncVerifiedKeysFromEvents(playbackEvents);
       }
     } catch {
       /* 忽略 */
@@ -1482,7 +1755,8 @@ async function loadPlaybackEvents(recordId = null) {
     resetPlaybackCollisionTracker();
   }
 
-  renderEventJumpList();
+  applyVerifiedFlagsToEvents();
+  renderEventReviewList();
 }
 
 async function seekToTimestamp(timeSec, frameIdx = null) {
@@ -1518,7 +1792,10 @@ async function seekToTimestamp(timeSec, frameIdx = null) {
 async function seekToEvent(ev) {
   if (!ev) return;
   activeEventKey = eventRowKey(ev);
-  renderEventJumpList();
+  updateReviewDock();
+  if ($("#event-review-list-details")?.open) renderEventReviewTable();
+  renderEventMarkers();
+  videoEl.pause();
   await seekToTimestamp(ev.timestamp_sec, ev.frame_idx);
 }
 
@@ -1526,10 +1803,16 @@ function clearPlaybackEvents() {
   playbackEvents = [];
   playbackEventsFromRealtime = false;
   activeEventKey = null;
+  verifiedTrueKeys.clear();
+  if (eventReviewSaveTimer) {
+    clearTimeout(eventReviewSaveTimer);
+    eventReviewSaveTimer = null;
+  }
   if (eventMarkersEl) eventMarkersEl.innerHTML = "";
   if (eventJumpList) eventJumpList.innerHTML = "";
   if (eventsPanel) eventsPanel.classList.add("hidden");
   if (eventCountLabel) eventCountLabel.textContent = "—";
+  setEventReviewSaveStatus("");
 }
 
 function setPlaybackInfo(text) {
@@ -2055,6 +2338,7 @@ $("#playback-annotation").addEventListener("change", async (e) => {
   try {
     await loadAnnotationBoxesFromFile(file);
     await loadPlaybackEvents(currentRecordId);
+    if (playbackEvents.length) await beginEventReview();
     const rtNote = playbackEventsFromRealtime ? "，已生成回放事件列表" : "";
     setPlaybackInfo(`已导入标注 ${file.name}，${annotationBoxes.length} 个货框${rtNote}`);
     redrawCurrentFrame();
@@ -2136,8 +2420,46 @@ videoEl.addEventListener("loadedmetadata", () => {
 });
 
 eventFilterSelect?.addEventListener("change", () => {
-  renderEventJumpList();
+  const first = filteredPlaybackEvents()[0];
+  if (first) void seekToEvent(first);
+  else renderEventReviewList();
 });
+
+function initEventReviewControls() {
+  $("#event-prev-btn")?.addEventListener("click", () => navigateReviewEvent(-1));
+  $("#event-skip-next-btn")?.addEventListener("click", () => void skipToNextEvent());
+  $("#event-mark-true-next-btn")?.addEventListener("click", () => void confirmTrueAndNext());
+  $("#event-unmark-btn")?.addEventListener("click", () => markActiveEventVerified(false));
+
+  $("#event-review-list-details")?.addEventListener("toggle", (e) => {
+    if (e.target.open) renderEventReviewTable();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!panels.playback?.classList.contains("active")) return;
+    const tag = (e.target?.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) {
+      return;
+    }
+    if (!playbackEvents.length) return;
+    if (e.key === "y" || e.key === "Y") {
+      e.preventDefault();
+      void confirmTrueAndNext();
+    } else if (e.key === "n" || e.key === "N" || e.key === "j" || e.key === "J") {
+      e.preventDefault();
+      void skipToNextEvent();
+    } else if (e.key === "u" || e.key === "U") {
+      e.preventDefault();
+      markActiveEventVerified(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      navigateReviewEvent(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      navigateReviewEvent(-1);
+    }
+  });
+}
 
 videoEl.addEventListener("seeked", () => {
   lastRenderedFrameIdx = -1;
@@ -2173,6 +2495,7 @@ seekBar.addEventListener("input", async () => {
 });
 
 bindStageLayoutWatch();
+initEventReviewControls();
 loadRecords();
 initPlaybackRecordFilter();
 void loadInferenceConfigDefaults();

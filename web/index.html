@@ -287,18 +287,54 @@
         </div>
         <div id="playback-events-panel" class="playback-events-panel hidden">
           <div class="playback-events-head">
-            <strong>事件跳转</strong>
+            <strong>事件复核</strong>
             <label class="event-filter-label">
-              筛选
+              队列
               <select id="event-filter">
+                <option value="unreviewed" selected>未标真</option>
                 <option value="all">全部</option>
+                <option value="verified">已标真</option>
                 <option value="alarm">告警</option>
                 <option value="collision">碰撞</option>
               </select>
             </label>
             <span id="event-count-label" class="hint">—</span>
           </div>
-          <ul id="event-jump-list" class="event-jump-list"></ul>
+          <div id="event-review-dock" class="event-review-dock">
+            <div class="event-review-dock-top">
+              <span id="event-review-position" class="event-review-position">—</span>
+              <span id="event-save-status" class="event-save-status hint" aria-live="polite"></span>
+            </div>
+            <div id="event-review-current" class="event-review-current">
+              <span id="event-review-badge" class="event-badge collision">—</span>
+              <span id="event-review-meta" class="event-review-meta">请选择或等待加载事件</span>
+              <span id="event-review-verified-tag" class="event-review-verified-tag hidden">已标真</span>
+            </div>
+            <div class="event-review-actions">
+              <button type="button" id="event-prev-btn" class="btn-review-nav" title="快捷键 ↑">‹ 上一条</button>
+              <button type="button" id="event-mark-true-next-btn" class="btn-review-true" title="快捷键 Y">✓ 标为真 · 下一条</button>
+              <button type="button" id="event-skip-next-btn" class="btn-review-skip" title="快捷键 N">下一条 ›</button>
+              <button type="button" id="event-unmark-btn" class="btn-review-unmark" title="快捷键 U">取消标真</button>
+            </div>
+            <p class="event-review-kbd-hint">Y 标真并下一条 · N 下一条 · U 取消 · ↑↓ 切换（自动定位画面，无需点跳转）</p>
+          </div>
+          <details id="event-review-list-details" class="event-review-list-details">
+            <summary id="event-review-list-summary">全部事件列表</summary>
+            <div class="event-review-table-wrap">
+              <table class="event-review-table">
+                <thead>
+                  <tr>
+                    <th class="col-verify" scope="col">真</th>
+                    <th class="col-type" scope="col">类型</th>
+                    <th class="col-time" scope="col">时间</th>
+                    <th class="col-frame" scope="col">帧</th>
+                    <th class="col-tokens" scope="col">货框</th>
+                  </tr>
+                </thead>
+                <tbody id="event-jump-list"></tbody>
+              </table>
+            </div>
+          </details>
         </div>
       </div>
       <p id="playback-info" class="hint"></p>
@@ -311,7 +347,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
   <script src="annotateGeometry.js"></script>
   <script src="annotateVisualMode.js"></script>
-  <script src="app.js?v=28"></script>
+  <script src="app.js?v=30"></script>
   <script src="annotate.js?v=10"></script>
 </body>
 </html>

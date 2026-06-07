@@ -110,6 +110,51 @@ def _frames_need_collision_recompute(frames: list[dict[str, Any]]) -> bool:
     return True
 
 
+_EVENT_TYPE_ZH = {"alarm": "告警", "collision": "碰撞"}
+
+
+def _verified_lookup_from_review(review: dict[str, Any] | None) -> set[tuple[str, int, str]]:
+    """人工复核：{(事件类型中文, 帧序号, 货框标识), ...}。"""
+    out: set[tuple[str, int, str]] = set()
+    if not isinstance(review, dict):
+        return out
+    for item in review.get("verified_true") or []:
+        if not isinstance(item, dict):
+            continue
+        et = _EVENT_TYPE_ZH.get(str(item.get("event_type") or "").strip(), "")
+        if not et:
+            continue
+        try:
+            fi = int(item.get("frame_idx") or 0)
+        except (TypeError, ValueError):
+            continue
+        for token in item.get("box_tokens") or []:
+            t = str(token).strip()
+            if t:
+                out.add((et, fi, t))
+    return out
+
+
+def _human_verified_label(
+    verified_lookup: set[tuple[str, int, str]],
+    *,
+    event_type_zh: str,
+    frame_idx: Any,
+    token: str,
+) -> str:
+    """人工标真：是 / 未复核（仅标记真实碰撞，未标默认为未复核）。"""
+    if not verified_lookup:
+        return "未复核"
+    try:
+        fi = int(frame_idx or 0)
+    except (TypeError, ValueError):
+        return "未复核"
+    t = str(token or "").strip()
+    if not t:
+        return "未复核"
+    return "是" if (event_type_zh, fi, t) in verified_lookup else "未复核"
+
+
 def _excel_cell(value: Any) -> Any:
     """Parquet/numpy 标量转为 openpyxl 可写入类型。"""
     if value is None:
@@ -273,6 +318,7 @@ def export_pose_to_xlsx_bytes(
     annotation_path: Path | None = None,
     alarm_min_consecutive_frames: int = 3,
     alarm_cooldown_frames: int = 12,
+    event_review: dict[str, Any] | None = None,
 ) -> bytes:
     try:
         from openpyxl import Workbook
@@ -292,6 +338,8 @@ def export_pose_to_xlsx_bytes(
 
     infer_w, infer_h = _infer_size_from_pose(data)
     scaled_boxes = _scaled_boxes_for_pose(data, annotation_path, infer_w, infer_h)
+    review = event_review if isinstance(event_review, dict) else data.get("event_review")
+    verified_lookup = _verified_lookup_from_review(review if isinstance(review, dict) else None)
 
     base_headers = [
         "帧序号",
@@ -317,6 +365,7 @@ def export_pose_to_xlsx_bytes(
         "跟踪ID",
         "触发手腕",
         "货框标识",
+        "人工标真",
         "手腕_x",
         "手腕_y",
     ] + kpt_headers
@@ -398,6 +447,12 @@ def export_pose_to_xlsx_bytes(
                         _excel_cell(person.get("person_track_id")),
                         hit.get("wrist"),
                         token,
+                        _human_verified_label(
+                            verified_lookup,
+                            event_type_zh=event_type,
+                            frame_idx=frame.get("frame_idx"),
+                            token=token,
+                        ),
                         _excel_cell(hit.get("x")),
                         _excel_cell(hit.get("y")),
                     ]
@@ -417,9 +472,10 @@ def export_pose_to_xlsx_bytes(
                 if ev_key in seen_event_keys:
                     continue
                 seen_event_keys.add(ev_key)
+                ev_type_zh = "告警" if token in frame_alarms else "碰撞"
                 ws_ev.append(
                     [
-                        "碰撞" if token not in frame_alarms else "告警",
+                        ev_type_zh,
                         _excel_cell(frame.get("frame_idx")),
                         _excel_cell(frame.get("source_frame_idx")),
                         _excel_cell(frame.get("timestamp_sec")),
@@ -427,16 +483,47 @@ def export_pose_to_xlsx_bytes(
                         None,
                         "",
                         token,
+                        _human_verified_label(
+                            verified_lookup,
+                            event_type_zh=ev_type_zh,
+                            frame_idx=frame.get("frame_idx"),
+                            token=token,
+                        ),
                         None,
                         None,
                     ]
                     + [None] * (3 * len(keypoint_names))
                 )
 
+    if isinstance(review, dict) and review.get("verified_true"):
+        ws_review = wb.create_sheet("人工复核")
+        ws_review.append(["事件类型", "帧序号", "源视频帧序号", "货框标识", "复核结果", "更新时间"])
+        updated_at = str(review.get("updated_at") or "")
+        for item in review.get("verified_true") or []:
+            if not isinstance(item, dict):
+                continue
+            et = _EVENT_TYPE_ZH.get(str(item.get("event_type") or "").strip(), str(item.get("event_type") or ""))
+            tokens = [str(t).strip() for t in (item.get("box_tokens") or []) if str(t).strip()]
+            for token in tokens or [""]:
+                ws_review.append(
+                    [
+                        et,
+                        _excel_cell(item.get("frame_idx")),
+                        _excel_cell(item.get("source_frame_idx")),
+                        token,
+                        "是",
+                        updated_at,
+                    ]
+                )
+
     ws_info = wb.create_sheet("说明")
     ws_info.append(["字段", "说明"])
     ws_info.append(["骨架数据", "每帧每位人员一行，含 COCO-17 共 17 个关键点 x/y/score"])
     ws_info.append(["碰撞告警事件", "手腕进入货框（碰撞）或连续帧触发告警时额外记录，含完整骨架"])
+    ws_info.append(["人工标真", "回放复核后写入：是=人工确认为真实碰撞/告警；未复核=尚未标真"])
+    ws_info.append(["人工复核", "汇总已标真事件（与 event_review.json 一致）"])
+    verified_n = len(review.get("verified_true") or []) if isinstance(review, dict) else 0
+    ws_info.append(["已标真事件数", verified_n])
     ws_info.append(["源视频", data.get("source_video") or ""])
     ws_info.append(["模型", data.get("model") or ""])
     ws_info.append(["总帧数", data.get("frame_count") or len(frames)])
@@ -459,14 +546,26 @@ def export_pose_json_file_to_xlsx(
     annotation_path: Path | None = None,
     alarm_min_consecutive_frames: int = 3,
     alarm_cooldown_frames: int = 12,
+    event_review_path: Path | None = None,
 ) -> Path:
     with open(pose_json_path, encoding="utf-8") as f:
         pose_data = json.load(f)
+    review: dict[str, Any] | None = None
+    review_path = event_review_path or pose_json_path.with_suffix(".event_review.json")
+    if review_path.is_file():
+        try:
+            with open(review_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                review = raw
+        except (OSError, json.JSONDecodeError):
+            review = None
     blob = export_pose_to_xlsx_bytes(
         pose_data,
         annotation_path=annotation_path,
         alarm_min_consecutive_frames=alarm_min_consecutive_frames,
         alarm_cooldown_frames=alarm_cooldown_frames,
+        event_review=review,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(blob)

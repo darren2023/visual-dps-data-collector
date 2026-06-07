@@ -758,16 +758,20 @@ h2 {
   background: #ffd166;
 }
 
+.seek-event-markers .event-marker.verified {
+  box-shadow: 0 0 0 2px #4ade80;
+  z-index: 2;
+}
+
 .playback-events-panel {
   margin-top: 0.65rem;
   padding: 0.65rem 0.75rem;
   background: #1a2332;
   border: 1px solid #334155;
   border-radius: 6px;
-  max-height: 160px;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
+  gap: 0.5rem;
 }
 
 .playback-events-head {
@@ -800,65 +804,254 @@ h2 {
   font-size: 0.8rem;
 }
 
-.event-jump-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  flex: 1;
+.event-save-status {
+  font-size: 0.78rem;
+  color: #86efac;
 }
 
-.event-jump-list li {
-  margin: 0;
+.event-save-status.is-error {
+  color: #fca5a5;
 }
 
-.event-jump-btn {
+.event-save-status.is-pending {
+  color: #fcd34d;
+}
+
+.event-review-dock {
+  flex-shrink: 0;
+  padding: 0.75rem 0.85rem;
+  background: #243044;
+  border: 1px solid #475569;
+  border-radius: 8px;
+}
+
+.event-review-dock-top {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  text-align: left;
-  padding: 0.35rem 0.4rem;
-  margin-bottom: 0.2rem;
-  border: none;
-  border-radius: 4px;
-  background: #243044;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.event-review-position {
+  font-size: 0.95rem;
+  font-weight: 600;
   color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-review-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.65rem;
+  padding: 0.55rem 0.65rem;
+  background: #1a2332;
+  border-radius: 6px;
+  border: 1px solid #334155;
+}
+
+.event-review-meta {
+  font-size: 1.05rem;
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-review-verified-tag {
+  font-size: 0.78rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.event-review-verified-tag.hidden {
+  display: none;
+}
+
+.event-review-actions {
+  display: grid;
+  grid-template-columns: minmax(5rem, auto) 1fr 1fr minmax(5.5rem, auto);
+  gap: 0.45rem;
+}
+
+.event-review-actions button {
+  border-radius: 6px;
   cursor: pointer;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  padding: 0.55rem 0.65rem;
+  white-space: nowrap;
+}
+
+.btn-review-true {
+  background: #16a34a;
+  color: #fff;
+  border-color: #15803d;
+  font-size: 1rem !important;
+  font-weight: 600;
+  padding: 0.65rem 0.75rem !important;
+}
+
+.btn-review-true:hover {
+  background: #15803d;
+}
+
+.btn-review-skip,
+.btn-review-nav,
+.btn-review-unmark {
+  background: #334155;
+  color: #e2e8f0;
+  border-color: #475569;
+}
+
+.btn-review-skip:hover,
+.btn-review-nav:hover,
+.btn-review-unmark:hover {
+  background: #475569;
+}
+
+.event-review-kbd-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.event-review-list-details {
+  flex-shrink: 0;
+}
+
+.event-review-list-details summary {
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.15rem;
+  user-select: none;
+}
+
+.event-review-list-details[open] summary {
+  margin-bottom: 0.35rem;
+}
+
+.event-review-table-wrap {
+  overflow: auto;
+  max-height: min(28vh, 220px);
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+@media (max-width: 720px) {
+  .event-review-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .btn-review-true {
+    grid-column: 1 / -1;
+  }
+}
+
+.event-review-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 0.82rem;
 }
 
-.event-jump-btn:hover {
-  background: #334155;
+.event-review-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #243044;
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.35rem 0.45rem;
+  border-bottom: 1px solid #334155;
 }
 
-.event-jump-btn.active {
-  outline: 1px solid #60a5fa;
+.event-review-table tbody tr {
+  border-bottom: 1px solid #2a3548;
+  cursor: pointer;
+}
+
+.event-review-table tbody tr:hover {
+  background: #243044;
+}
+
+.event-review-table tbody tr.active {
   background: #1e3a5f;
+  outline: 1px solid #60a5fa;
+  outline-offset: -1px;
 }
 
-.event-jump-btn .event-badge {
-  flex-shrink: 0;
+.event-review-table tbody tr.verified-true {
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.event-review-table tbody tr.verified-true.active {
+  background: rgba(30, 58, 95, 0.95);
+}
+
+.event-review-table td {
+  padding: 0.32rem 0.45rem;
+  vertical-align: middle;
+  color: #e2e8f0;
+}
+
+.event-review-table .col-verify {
+  width: 2.5rem;
+  text-align: center;
+}
+
+.event-review-table .col-type {
+  width: 3.2rem;
+}
+
+.event-review-table .col-time {
+  width: 3.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-review-table .col-frame {
+  width: 4.5rem;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.event-review-table .col-tokens {
+  color: #cbd5e1;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-verify-check {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #4ade80;
+  cursor: pointer;
+}
+
+.event-badge {
+  display: inline-block;
   font-size: 0.72rem;
   padding: 0.1rem 0.35rem;
   border-radius: 3px;
   font-weight: 600;
 }
 
-.event-jump-btn .event-badge.alarm {
+.event-badge.alarm {
   background: rgba(255, 71, 87, 0.25);
   color: #ff6b7a;
 }
 
-.event-jump-btn .event-badge.collision {
+.event-badge.collision {
   background: rgba(255, 209, 102, 0.2);
   color: #ffd166;
 }
 
-.event-jump-btn .event-meta {
-  color: #94a3b8;
-  font-size: 0.78rem;
-}
 
 #time-label {
   font-variant-numeric: tabular-nums;

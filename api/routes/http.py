@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from annotation_store import (
@@ -33,13 +33,18 @@ from export_pose_xlsx import export_pose_to_xlsx_bytes
 from model_assets import VIDEO_EXTENSIONS
 from pose_store import (
     STORAGE_V2_PARQUET,
+    normalize_review_entry,
     delete_record,
+    enrich_events_with_review,
+    event_signature,
     iter_active_records,
+    load_event_review,
     load_events,
     load_frames_range,
     load_pose_document,
     load_pose_header,
     load_timeline,
+    save_event_review,
 )
 from video_frame import first_frame_base64
 
@@ -397,12 +402,14 @@ def export_record_xlsx(record_id: str) -> Response:
 
     settings = build_settings(config_path=resolve_config_path(None), cli={})
     ann_path = annotation_path_for_record(record_id, locator=locator)
+    event_review = load_event_review(locator)
     try:
         blob = export_pose_to_xlsx_bytes(
             pose_data,
             annotation_path=ann_path,
             alarm_min_consecutive_frames=settings.alarm_min_consecutive_frames,
             alarm_cooldown_frames=settings.alarm_cooldown_frames,
+            event_review=event_review,
         )
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
@@ -424,17 +431,100 @@ def get_record_events(record_id: str) -> JSONResponse:
     if not locator:
         raise HTTPException(404, "记录不存在")
     try:
-        events = load_events(locator)
+        events = enrich_events_with_review(load_events(locator), locator)
+        review = load_event_review(locator)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
     alarm_n = sum(1 for e in events if e.get("event_type") == "alarm")
     collision_n = sum(1 for e in events if e.get("event_type") == "collision")
+    verified_n = sum(1 for e in events if e.get("verified_true"))
     return JSONResponse(
         {
             "record_id": record_id,
             "count": len(events),
             "alarm_count": alarm_n,
             "collision_count": collision_n,
+            "verified_true_count": verified_n,
+            "events": events,
+            "event_review": review,
+        }
+    )
+
+
+@router.get("/api/records/{record_id:path}/event-review")
+def get_record_event_review(record_id: str) -> JSONResponse:
+    locator = locate_record_by_id(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    return JSONResponse(load_event_review(locator))
+
+
+@router.patch("/api/records/{record_id:path}/event-review")
+def patch_record_event_review(record_id: str, body: dict[str, Any] = Body(...)) -> JSONResponse:
+    """更新人工复核：支持 verified_true 全量替换，或 action=toggle 单条切换。"""
+    locator = locate_record_by_id(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体须为 JSON 对象")
+
+    review = load_event_review(locator)
+    verified: list[dict[str, Any]] = list(review.get("verified_true") or [])
+    by_sig = {
+        event_signature(str(v.get("event_type") or ""), int(v.get("frame_idx") or 0), v.get("box_tokens")): v
+        for v in verified
+        if isinstance(v, dict)
+    }
+
+    action = str(body.get("action") or "").strip().lower()
+    if action == "toggle":
+        entry = body.get("event")
+        if not isinstance(entry, dict):
+            raise HTTPException(400, "toggle 须包含 event 对象")
+        norm = normalize_review_entry(entry)
+        if not norm:
+            raise HTTPException(400, "event 字段无效")
+        sig = event_signature(norm["event_type"], norm["frame_idx"], norm["box_tokens"])
+        want = body.get("verified_true")
+        if want is None:
+            want = sig not in by_sig
+        if bool(want):
+            by_sig[sig] = norm
+        else:
+            by_sig.pop(sig, None)
+        verified = list(by_sig.values())
+    elif "verified_true" in body:
+        raw_list = body.get("verified_true")
+        if not isinstance(raw_list, list):
+            raise HTTPException(400, "verified_true 须为数组")
+        verified = []
+        seen: set[str] = set()
+        for item in raw_list:
+            norm = normalize_review_entry(item if isinstance(item, dict) else {})
+            if not norm:
+                continue
+            sig = event_signature(norm["event_type"], norm["frame_idx"], norm["box_tokens"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            verified.append(norm)
+    else:
+        raise HTTPException(400, "请提供 verified_true 或 action=toggle")
+
+    try:
+        path = save_event_review(locator, verified)
+    except OSError as exc:
+        raise HTTPException(500, f"保存复核失败: {exc}") from exc
+
+    events = enrich_events_with_review(load_events(locator), locator)
+    saved = load_event_review(locator)
+    return JSONResponse(
+        {
+            "status": "ok",
+            "record_id": record_id,
+            "path": str(path),
+            "verified_true_count": len(saved.get("verified_true") or []),
+            "event_review": saved,
             "events": events,
         }
     )

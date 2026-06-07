@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -14,6 +15,8 @@ SCHEMA_V2 = 2
 MANIFEST_FILE = "manifest.json"
 TIMELINE_FILE = "timeline.parquet"
 SKELETON_FILE = "skeleton.parquet"
+EVENT_REVIEW_FILE = "event_review.json"
+EVENT_REVIEW_SCHEMA = 1
 STORAGE_V2_PARQUET = "v2_parquet"
 STORAGE_V1_JSON = "v1_json"
 
@@ -514,6 +517,151 @@ def load_events(locator: RecordLocator) -> list[dict[str, Any]]:
     return events
 
 
+def event_signature(event_type: str, frame_idx: int, box_tokens: list[Any] | None) -> str:
+    """事件唯一键（与前端 eventRowKey 一致）。"""
+    tokens = sorted(str(t).strip() for t in (box_tokens or []) if str(t).strip())
+    return f"{str(event_type or '').strip()}:{int(frame_idx)}:{','.join(tokens)}"
+
+
+def event_review_path(locator: RecordLocator) -> Path:
+    if locator.storage == STORAGE_V2_PARQUET:
+        return locator.path / EVENT_REVIEW_FILE
+    return locator.path.with_suffix(".event_review.json")
+
+
+def normalize_review_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    event_type = str(entry.get("event_type") or "").strip()
+    if event_type not in ("alarm", "collision"):
+        return None
+    try:
+        frame_idx = int(entry.get("frame_idx") or 0)
+    except (TypeError, ValueError):
+        return None
+    if frame_idx < 0:
+        return None
+    tokens = [str(t).strip() for t in (entry.get("box_tokens") or []) if str(t).strip()]
+    if not tokens:
+        return None
+    try:
+        source_frame_idx = int(entry.get("source_frame_idx") or frame_idx)
+    except (TypeError, ValueError):
+        source_frame_idx = frame_idx
+    return {
+        "event_type": event_type,
+        "frame_idx": frame_idx,
+        "source_frame_idx": source_frame_idx,
+        "box_tokens": tokens,
+    }
+
+
+def load_event_review(locator: RecordLocator) -> dict[str, Any]:
+    """加载人工复核结果（标为真的碰撞/告警）。"""
+    path = event_review_path(locator)
+    empty = {
+        "schema": EVENT_REVIEW_SCHEMA,
+        "record_id": locator.record_id,
+        "verified_true": [],
+    }
+    if not path.is_file():
+        return empty
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return empty
+    if not isinstance(raw, dict):
+        return empty
+
+    verified: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw.get("verified_true") or []:
+        norm = normalize_review_entry(item if isinstance(item, dict) else {})
+        if not norm:
+            continue
+        sig = event_signature(norm["event_type"], norm["frame_idx"], norm["box_tokens"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        verified.append(norm)
+
+    return {
+        "schema": int(raw.get("schema") or EVENT_REVIEW_SCHEMA),
+        "record_id": str(raw.get("record_id") or locator.record_id),
+        "updated_at": str(raw.get("updated_at") or ""),
+        "verified_true": verified,
+    }
+
+
+def load_verified_true_signatures(locator: RecordLocator) -> set[str]:
+    review = load_event_review(locator)
+    out: set[str] = set()
+    for item in review.get("verified_true") or []:
+        if not isinstance(item, dict):
+            continue
+        out.add(
+            event_signature(
+                str(item.get("event_type") or ""),
+                int(item.get("frame_idx") or 0),
+                item.get("box_tokens"),
+            )
+        )
+    return out
+
+
+def save_event_review(locator: RecordLocator, verified_true: list[dict[str, Any]]) -> Path:
+    """保存人工复核结果到记录目录 event_review.json。"""
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in verified_true:
+        norm = normalize_review_entry(item if isinstance(item, dict) else {})
+        if not norm:
+            continue
+        sig = event_signature(norm["event_type"], norm["frame_idx"], norm["box_tokens"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        normalized.append(norm)
+    normalized.sort(
+        key=lambda e: (
+            int(e.get("frame_idx") or 0),
+            str(e.get("event_type") or ""),
+            ",".join(e.get("box_tokens") or []),
+        )
+    )
+
+    payload = {
+        "schema": EVENT_REVIEW_SCHEMA,
+        "record_id": locator.record_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "verified_true": normalized,
+    }
+    path = event_review_path(locator)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path.resolve()
+
+
+def enrich_events_with_review(
+    events: list[dict[str, Any]],
+    locator: RecordLocator,
+) -> list[dict[str, Any]]:
+    verified = load_verified_true_signatures(locator)
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        row = dict(ev)
+        sig = event_signature(
+            str(ev.get("event_type") or ""),
+            int(ev.get("frame_idx") or 0),
+            ev.get("box_tokens"),
+        )
+        row["verified_true"] = sig in verified
+        out.append(row)
+    return out
+
+
 def load_pose_header(locator: RecordLocator) -> dict[str, Any]:
     """加载不含 frames 的头部（Web manifest / 列表）。"""
     if locator.storage == STORAGE_V1_JSON:
@@ -590,6 +738,11 @@ def delete_record(
     if sidecar.is_file():
         sidecar.unlink()
         deleted.append(str(sidecar.resolve()))
+
+    review_path = event_review_path(locator)
+    if review_path.is_file():
+        review_path.unlink()
+        deleted.append(str(review_path.resolve()))
 
     if locator.path.is_file():
         legacy_sidecar = locator.path.with_suffix(".meta.json")
