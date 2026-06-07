@@ -695,6 +695,35 @@ function buildSavePayload() {
   };
 }
 
+function annotateSaveQueryParams() {
+  const qs = new URLSearchParams();
+  if (ann$("#annotate-preserve-existing")?.checked) qs.set("preserve_existing", "true");
+  if (ann$("#annotate-recompute-collisions")?.checked) qs.set("recompute_collisions", "true");
+  if (pendingAnnotateRecordId) qs.set("record_ids", pendingAnnotateRecordId);
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+function encodeRecordIdForApi(recordId) {
+  return String(recordId || "")
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function formatRecomputeStatus(recompute) {
+  if (!recompute) return "";
+  if (recompute.status === "skipped") {
+    return ` · 碰撞重算跳过：${recompute.reason || "无关联记录"}`;
+  }
+  const ok = (recompute.recomputed || []).length;
+  const bad = (recompute.errors || []).length;
+  if (!ok && bad) {
+    return ` · 碰撞重算失败：${recompute.errors.map((e) => e.error).join("; ")}`;
+  }
+  return ` · 已重算碰撞 ${ok} 条记录（复用骨架）${bad ? `，失败 ${bad} 条` : ""}`;
+}
+
 async function saveAnnotation() {
   const stem = (ann$("#annotate-stem")?.value || currentVideoStem || "").trim();
   if (!stem) {
@@ -712,16 +741,49 @@ async function saveAnnotation() {
   }
   currentVideoStem = stem;
   const payload = buildSavePayload();
-  setAnnotateStatus("正在保存…");
-  const res = await fetch(`/api/annotations/by-video/${encodeURIComponent(stem)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const recompute = !!ann$("#annotate-recompute-collisions")?.checked;
+  setAnnotateStatus(recompute ? "正在保存并重算碰撞…" : "正在保存…");
+  const res = await fetch(
+    `/api/annotations/by-video/${encodeURIComponent(stem)}${annotateSaveQueryParams()}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.detail || res.statusText);
+  if (!res.ok) throw new Error(formatApiDetail(body.detail) || body.detail || res.statusText);
+  const savedStem = body.video_stem || stem;
+  currentVideoStem = savedStem;
+  if (savedStem !== stem) ann$("#annotate-stem").value = savedStem;
   setAnnotateStatus(
-    `✅ 已保存至 <code>localdata/json/annotations/${stem}.json</code>（${body.box_count ?? finalBoxes.length} 个货框，覆盖旧标注）`
+    `✅ ${body.message || "已保存"}：<code>annotations/${savedStem}.json</code>（${body.box_count ?? finalBoxes.length} 个货框）${formatRecomputeStatus(body.recompute)}`
+  );
+}
+
+async function recomputeCollisionsOnly() {
+  const stem = (ann$("#annotate-stem")?.value || currentVideoStem || "").trim();
+  if (!pendingAnnotateRecordId) {
+    setAnnotateStatus("请从回放/采集记录进入标注页，或保存时勾选重算碰撞", true);
+    return;
+  }
+  setAnnotateStatus("正在重算碰撞（复用已有骨架）…");
+  const payload = stem ? { annotation_stem: stem } : {};
+  const res = await fetch(
+    `/api/records/${encodeRecordIdForApi(pendingAnnotateRecordId)}/recompute-collisions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(formatApiDetail(body.detail) || body.detail || res.statusText);
+  const row = (body.recomputed || [])[0];
+  const frames = row?.frame_count ?? "?";
+  const ann = row?.annotation_file || stem;
+  setAnnotateStatus(
+    `✅ 碰撞已重算（${ann}）：记录 ${pendingAnnotateRecordId}，${frames} 帧骨架未重新推理。`
   );
 }
 
@@ -837,18 +899,20 @@ function initAnnotatePanel() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      setAnnotateStatus("正在上传并覆盖保存…");
-      const res = await fetch(`/api/annotations/by-video/${encodeURIComponent(stem)}/upload`, {
-        method: "POST",
-        body: fd,
-      });
+      setAnnotateStatus("正在上传保存…");
+      const res = await fetch(
+        `/api/annotations/by-video/${encodeURIComponent(stem)}/upload${annotateSaveQueryParams()}`,
+        { method: "POST", body: fd }
+      );
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.detail || res.statusText);
-      currentVideoStem = stem;
+      if (!res.ok) throw new Error(formatApiDetail(body.detail) || body.detail || res.statusText);
+      const savedStem = body.video_stem || stem;
+      currentVideoStem = savedStem;
+      if (savedStem !== stem) ann$("#annotate-stem").value = savedStem;
       const data = JSON.parse(await file.text());
       applyAnnotationPayload(data);
       setAnnotateStatus(
-        `✅ 已上传覆盖（${body.box_count ?? "?"} 个货框）。可拖动货位角点微调后保存。`
+        `✅ ${body.message || "已上传"}（${body.box_count ?? "?"} 个货框）${formatRecomputeStatus(body.recompute)}`
       );
     } catch (err) {
       setAnnotateStatus(`❌ ${err.message}`, true);
@@ -859,6 +923,14 @@ function initAnnotatePanel() {
   ann$("#annotate-save")?.addEventListener("click", async () => {
     try {
       await saveAnnotation();
+    } catch (err) {
+      setAnnotateStatus(`❌ ${err.message}`, true);
+    }
+  });
+
+  ann$("#annotate-recompute-only")?.addEventListener("click", async () => {
+    try {
+      await recomputeCollisionsOnly();
     } catch (err) {
       setAnnotateStatus(`❌ ${err.message}`, true);
     }

@@ -1,4 +1,4 @@
-"""货位标注存储：每个视频（video_stem）仅保留一份 JSON，新上传/保存覆盖旧文件。"""
+"""货位标注存储：默认按 video_stem 覆盖；可选保留原文件并另存为 stem-(2).json。"""
 
 from __future__ import annotations
 
@@ -17,13 +17,42 @@ def annotation_path_for_video_stem(video_stem: str, *, annotation_dir: Path) -> 
     return annotation_dir / f"{safe}.json"
 
 
+def annotation_file_exists(annotation_dir: Path, stem: str) -> bool:
+    return annotation_path_for_video_stem(stem, annotation_dir=annotation_dir).is_file()
+
+
+def allocate_annotation_stem(annotation_dir: Path, base_stem: str) -> str:
+    """标注文件名分配：无 71.json 用 71；已有则 71-(2)、71-(3)…"""
+    base = sanitize_file_stem(base_stem)
+    if not annotation_file_exists(annotation_dir, base):
+        return base
+    for n in range(2, 10_000):
+        candidate = f"{base}-({n})"
+        if not annotation_file_exists(annotation_dir, candidate):
+            return candidate
+    raise ValueError(f"标注 {base_stem} 可用文件名过多，请清理 annotations 目录后重试")
+
+
+def resolve_annotation_save_stem(
+    annotation_dir: Path,
+    requested_stem: str,
+    *,
+    preserve_existing: bool = False,
+) -> str:
+    """决定本次写入的标注 stem（覆盖或另存）。"""
+    base = sanitize_file_stem(requested_stem)
+    if preserve_existing:
+        return allocate_annotation_stem(annotation_dir, base)
+    return base
+
+
 def save_annotation_json(
     video_stem: str,
     data: dict[str, Any],
     *,
     annotation_dir: Path,
 ) -> Path:
-    """写入标注 JSON（覆盖已有）。"""
+    """写入标注 JSON（路径由 video_stem 决定，可能为 71-(2) 等）。"""
     path = annotation_path_for_video_stem(video_stem, annotation_dir=annotation_dir)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

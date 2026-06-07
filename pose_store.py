@@ -239,6 +239,47 @@ def _build_manifest_from_collect(data: dict[str, Any], record_id: str) -> dict[s
     return manifest
 
 
+def write_timeline_parquet(record_dir: Path, frames: list[dict[str, Any]]) -> None:
+    """仅重写 timeline.parquet（碰撞重算时保留 skeleton.parquet）。"""
+    pa, pq = _require_pyarrow()
+    record_dir = Path(record_dir)
+    timeline_rows = [_timeline_row_from_frame(fr) for fr in frames if isinstance(fr, dict)]
+    if timeline_rows:
+        pq.write_table(pa.Table.from_pylist(timeline_rows), record_dir / TIMELINE_FILE, compression="zstd")
+        return
+    pq.write_table(
+        pa.table(
+            {
+                "frame_idx": pa.array([], type=pa.int32()),
+                "source_frame_idx": pa.array([], type=pa.int32()),
+                "timestamp_sec": pa.array([], type=pa.float64()),
+                "infer_width": pa.array([], type=pa.int32()),
+                "infer_height": pa.array([], type=pa.int32()),
+                "collisions": pa.array([], type=pa.list_(pa.string())),
+                "alarm_collisions": pa.array([], type=pa.list_(pa.string())),
+            }
+        ),
+        record_dir / TIMELINE_FILE,
+        compression="zstd",
+    )
+
+
+def patch_v2_manifest(record_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
+    """合并更新 manifest.json 并写回。"""
+    record_dir = Path(record_dir)
+    path = record_dir / MANIFEST_FILE
+    if not path.is_file():
+        raise FileNotFoundError(f"manifest 不存在: {path}")
+    with open(path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest 根节点必须是 object")
+    manifest.update(updates)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return manifest
+
+
 def write_v2_package(record_dir: Path, data: dict[str, Any], *, record_id: str | None = None) -> Path:
     """将采集结果写入分包 Parquet 目录。"""
     pa, pq = _require_pyarrow()

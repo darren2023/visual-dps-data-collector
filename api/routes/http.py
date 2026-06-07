@@ -56,9 +56,12 @@ from api.collect_service import (
 )
 from api.constants import VIDEO_MIME
 from api.job_store import get_job, set_job
+from annotation_store import annotation_path_for_video_stem
+from api.collision_recompute_service import recompute_records_collisions
 from api.record_service import (
     annotation_frame_size,
     annotation_path_for_record,
+    find_records_for_annotation_stem,
     locate_record_by_id,
     meta_path_for_record,
     parse_save_video_flag,
@@ -77,6 +80,37 @@ from api.reflection_service import (
 )
 
 router = APIRouter()
+
+
+def _parse_record_ids_param(raw: str) -> list[str]:
+    return [p.strip() for p in str(raw or "").replace(";", ",").split(",") if p.strip()]
+
+
+def _annotation_save_message(saved_stem: str, requested_stem: str, *, preserved: bool) -> str:
+    if preserved and saved_stem != requested_stem:
+        return f"已保留原标注，另存为 {saved_stem}.json"
+    return "已覆盖保存标注"
+
+
+def _maybe_recompute_collisions(
+    *,
+    annotation_path: Path,
+    saved_stem: str,
+    requested_stem: str,
+    recompute_collisions: bool,
+    record_ids: list[str],
+) -> dict[str, Any] | None:
+    if not recompute_collisions:
+        return None
+    targets = record_ids or find_records_for_annotation_stem(requested_stem)
+    if not targets:
+        return {"status": "skipped", "reason": "未找到关联骨架记录", "record_ids": []}
+    return recompute_records_collisions(
+        targets,
+        annotation_path,
+        locate_record=locate_record_by_id,
+        video_stem=saved_stem,
+    )
 
 @router.get("/api/health")
 def health() -> dict[str, str]:
@@ -307,23 +341,48 @@ def list_annotate_options() -> list[dict[str, Any]]:
 
 
 @router.put("/api/annotations/by-video/{video_stem}")
-async def put_annotation_by_video(video_stem: str, body: dict[str, Any]) -> dict[str, Any]:
+async def put_annotation_by_video(
+    video_stem: str,
+    body: dict[str, Any],
+    preserve_existing: bool = False,
+    recompute_collisions: bool = False,
+    record_ids: str = "",
+) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体须为 JSON 对象")
-    stem = sanitize_file_stem(video_stem)
+    requested_stem = sanitize_file_stem(video_stem)
     fw, fh = annotation_frame_size(body)
     try:
-        path = persist_annotation_for_video(
-            body, stem, frame_width=fw, frame_height=fh
+        path, saved_stem = persist_annotation_for_video(
+            body,
+            requested_stem,
+            frame_width=fw,
+            frame_height=fh,
+            preserve_existing=preserve_existing,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     boxes, _ = validate_annotation_payload(body)
+    recompute_result = None
+    try:
+        recompute_result = _maybe_recompute_collisions(
+            annotation_path=path,
+            saved_stem=saved_stem,
+            requested_stem=requested_stem,
+            recompute_collisions=recompute_collisions,
+            record_ids=_parse_record_ids_param(record_ids),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(500, f"碰撞重算失败: {exc}") from exc
     return {
         "status": "ok",
-        "video_stem": stem,
+        "video_stem": saved_stem,
+        "requested_stem": requested_stem,
         "path": str(path),
         "box_count": len(boxes),
+        "preserved_original": saved_stem != requested_stem if preserve_existing else False,
+        "message": _annotation_save_message(saved_stem, requested_stem, preserved=preserve_existing),
+        "recompute": recompute_result,
     }
 
 
@@ -331,6 +390,9 @@ async def put_annotation_by_video(video_stem: str, body: dict[str, Any]) -> dict
 async def upload_annotation_by_video(
     video_stem: str,
     file: UploadFile = File(...),
+    preserve_existing: bool = False,
+    recompute_collisions: bool = False,
+    record_ids: str = "",
 ) -> dict[str, Any]:
     if not file.filename:
         raise HTTPException(400, "未选择文件")
@@ -343,26 +405,73 @@ async def upload_annotation_by_video(
         raise HTTPException(400, f"无效 JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise HTTPException(400, "标注 JSON 须为对象")
-    stem = sanitize_file_stem(video_stem)
+    requested_stem = sanitize_file_stem(video_stem)
     fw, fh = annotation_frame_size(data)
     try:
-        path = persist_annotation_for_video(
+        path, saved_stem = persist_annotation_for_video(
             data,
-            stem,
+            requested_stem,
             source_video=file.filename,
             frame_width=fw,
             frame_height=fh,
+            preserve_existing=preserve_existing,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     boxes, _ = validate_annotation_payload(data)
+    recompute_result = None
+    try:
+        recompute_result = _maybe_recompute_collisions(
+            annotation_path=path,
+            saved_stem=saved_stem,
+            requested_stem=requested_stem,
+            recompute_collisions=recompute_collisions,
+            record_ids=_parse_record_ids_param(record_ids),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(500, f"碰撞重算失败: {exc}") from exc
     return {
         "status": "ok",
-        "video_stem": stem,
+        "video_stem": saved_stem,
+        "requested_stem": requested_stem,
         "path": str(path),
         "box_count": len(boxes),
-        "message": "已覆盖保存（每个视频仅保留最新一份标注）",
+        "preserved_original": saved_stem != requested_stem if preserve_existing else False,
+        "message": _annotation_save_message(saved_stem, requested_stem, preserved=preserve_existing),
+        "recompute": recompute_result,
     }
+
+
+@router.post("/api/records/{record_id:path}/recompute-collisions")
+async def recompute_record_collisions_api(
+    record_id: str,
+    body: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    """复用已有骨架，仅按指定标注重算碰撞/告警。"""
+    locator = locate_record_by_id(record_id)
+    if not locator:
+        raise HTTPException(404, "记录不存在")
+    payload = body if isinstance(body, dict) else {}
+    ann_stem = str(payload.get("annotation_stem") or "").strip()
+    paths = resolve_app_paths()
+    if ann_stem:
+        ann_path = annotation_path_for_video_stem(ann_stem, annotation_dir=paths.annotation_dir)
+    else:
+        ann_path = resolve_annotation_path_for_record(record_id, locator=locator)
+    if not ann_path or not ann_path.is_file():
+        raise HTTPException(404, "未找到可用标注 JSON")
+    try:
+        result = recompute_records_collisions(
+            [record_id],
+            ann_path,
+            locate_record=locate_record_by_id,
+            video_stem=ann_stem or ann_path.stem,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(500, str(exc)) from exc
+    if result.get("errors"):
+        raise HTTPException(400, result["errors"][0].get("error", "重算失败"))
+    return result
 
 
 @router.post("/api/annotation/validate")

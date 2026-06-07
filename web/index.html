@@ -161,7 +161,7 @@
         <div class="row">
           <label>
             <span class="label-with-tip">video_stem（视频主名）
-              <button type="button" class="field-tip" data-tip="与视频文件名主名一致，用于关联 annotations/{主名}.json。同一主名仅保留最新一份标注。">?</button>
+              <button type="button" class="field-tip" data-tip="与视频文件名主名或 reflection 标注编号一致，对应 annotations/{主名}.json。可勾选保留原文件并另存为 71-(2).json。">?</button>
             </span>
             <input type="text" id="annotate-stem" placeholder="与视频文件名主名一致" />
           </label>
@@ -212,8 +212,19 @@
           </label>
           <button type="button" id="annotate-delete-cell" class="danger-btn">删除货位</button>
         </div>
+        <div class="annotate-save-options">
+          <label class="annotate-check">
+            <input type="checkbox" id="annotate-preserve-existing" />
+            保留原标注（另存为 <code>stem-(2).json</code>）
+          </label>
+          <label class="annotate-check">
+            <input type="checkbox" id="annotate-recompute-collisions" checked />
+            保存后仅重算碰撞（复用骨架，不重新推理）
+          </label>
+        </div>
         <div class="annotate-actions">
-          <button type="button" id="annotate-save" class="primary-btn">保存标注（覆盖）</button>
+          <button type="button" id="annotate-save" class="primary-btn">保存标注</button>
+          <button type="button" id="annotate-recompute-only">仅重算碰撞</button>
           <button type="button" id="annotate-restart">重置货架</button>
           <button type="button" id="annotate-download">下载当前 JSON</button>
         </div>
@@ -348,6 +359,6 @@
   <script src="annotateGeometry.js"></script>
   <script src="annotateVisualMode.js"></script>
   <script src="app.js?v=30"></script>
-  <script src="annotate.js?v=10"></script>
+  <script src="annotate.js?v=11"></script>
 </body>
 </html>

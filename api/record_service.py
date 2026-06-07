@@ -13,6 +13,7 @@ from annotation_store import (
     annotation_path_for_video_stem,
     load_annotation_json,
     normalize_annotation_payload,
+    resolve_annotation_save_stem,
     resolve_video_stem_from_record,
     save_annotation_json,
     validate_annotation_payload,
@@ -28,6 +29,7 @@ from config_loader import (
 from model_assets import VIDEO_EXTENSIONS
 from pose_store import (
     STORAGE_V2_PARQUET,
+    iter_active_records,
     load_pose_header,
     locate_record as find_record,
     meta_sidecar_path,
@@ -99,11 +101,17 @@ def persist_annotation_for_video(
     source_video: str = "",
     frame_width: int = 0,
     frame_height: int = 0,
-) -> Path:
+    preserve_existing: bool = False,
+) -> tuple[Path, str]:
     paths = resolve_app_paths()
+    save_stem = resolve_annotation_save_stem(
+        paths.annotation_dir,
+        video_stem,
+        preserve_existing=preserve_existing,
+    )
     normalized = normalize_annotation_payload(
         payload,
-        video_stem=video_stem,
+        video_stem=save_stem,
         source_video=source_video,
         frame_width=frame_width,
         frame_height=frame_height,
@@ -111,7 +119,42 @@ def persist_annotation_for_video(
     _, err = validate_annotation_payload(normalized)
     if err:
         raise ValueError(err)
-    return save_annotation_json(video_stem, normalized, annotation_dir=paths.annotation_dir)
+    path = save_annotation_json(save_stem, normalized, annotation_dir=paths.annotation_dir)
+    return path, save_stem
+
+
+def find_records_for_annotation_stem(annotation_stem: str) -> list[str]:
+    """查找曾关联 annotations/{stem}.json 的骨架记录。"""
+    paths = resolve_app_paths()
+    stem = sanitize_file_stem(annotation_stem)
+    target = annotation_path_for_video_stem(stem, annotation_dir=paths.annotation_dir)
+    target_key = str(target.resolve()) if target.is_file() else str(target)
+    found: list[str] = []
+    for locator in iter_active_records(paths.json_dir):
+        record_id = locator.record_id
+        ann_path = resolve_annotation_path_for_record(record_id, locator=locator)
+        if ann_path and ann_path.is_file():
+            if str(ann_path.resolve()) == target_key:
+                found.append(record_id)
+                continue
+        meta_side = meta_path_for_record(record_id, locator)
+        meta: dict[str, Any] | None = None
+        if meta_side.is_file():
+            try:
+                meta = json.loads(meta_side.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = None
+        vs = resolve_video_stem_for_record(record_id, locator=locator, meta=meta)
+        if vs == stem:
+            found.append(record_id)
+    # 去重保序
+    seen: set[str] = set()
+    out: list[str] = []
+    for rid in found:
+        if rid not in seen:
+            seen.add(rid)
+            out.append(rid)
+    return out
 
 
 def annotation_frame_size(payload: dict[str, Any]) -> tuple[int, int]:

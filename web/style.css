@@ -1062,6 +1062,31 @@ main.wide {
   max-width: 1100px;
 }
 
+.annotate-save-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0.65rem;
+  padding: 0.55rem 0.65rem;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.annotate-save-options .annotate-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.88rem;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.annotate-save-options code {
+  font-size: 0.82rem;
+  color: #93c5fd;
+}
+
 .annotate-actions {
   display: flex;
   flex-wrap: wrap;
