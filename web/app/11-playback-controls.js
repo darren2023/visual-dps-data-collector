@@ -71,7 +71,12 @@ function initPlaybackSpeedControl() {
   readPlaybackSpeedFromSelect();
 }
 
-$("#play-btn").addEventListener("click", async () => {
+function isPlaybackActive() {
+  if (jsonOnlyTimer) return true;
+  return !!(videoEl.src && !videoEl.paused && !videoEl.ended);
+}
+
+async function startPlaybackTransport() {
   if (videoEl.src) {
     videoEl.style.display = "block";
     readPlaybackSpeedFromSelect();
@@ -85,11 +90,25 @@ $("#play-btn").addEventListener("click", async () => {
     tickPoseFrameIdx = -1;
     resetPlaybackCollisionTracker();
     tick();
-  } else if (poseData) {
-    startJsonOnlyPlayback();
-  } else {
-    setPlaybackInfo("请先导入 JSON");
+    return;
   }
+  if (poseData) {
+    startJsonOnlyPlayback(jsonOnlyFrameIdx || tickPoseFrameIdx || 0);
+    return;
+  }
+  setPlaybackInfo("请先导入 JSON 或加载记录");
+}
+
+function togglePlaybackTransport() {
+  if (isPlaybackActive()) {
+    stopPlayback();
+    return;
+  }
+  void startPlaybackTransport();
+}
+
+$("#play-btn").addEventListener("click", () => {
+  void startPlaybackTransport();
 });
 
 $("#pause-btn").addEventListener("click", () => {
@@ -140,6 +159,11 @@ function initEventReviewControls() {
     if (!panels.playback?.classList.contains("active")) return;
     const tag = (e.target?.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable) {
+      return;
+    }
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      togglePlaybackTransport();
       return;
     }
     if (!playbackEvents.length) return;
