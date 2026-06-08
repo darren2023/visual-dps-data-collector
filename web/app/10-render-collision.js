@@ -451,6 +451,7 @@ function tick() {
   if (videoEl.duration && Number.isFinite(videoEl.duration)) {
     seekBar.value = String((videoEl.currentTime / videoEl.duration) * 1000);
     timeLabel.textContent = formatTime(videoEl.currentTime);
+    syncActiveEventFromPlaybackPosition({ timeSec: videoEl.currentTime });
   }
   rafId = requestAnimationFrame(tick);
 }
@@ -496,9 +497,11 @@ function startJsonOnlyPlayback(startIdx = 0) {
   jsonOnlyTimer = setInterval(async () => {
     if (idx >= frameByTime.length) idx = 0;
     jsonOnlyFrameIdx = idx;
-    await renderFrameEntry(frameByTime[idx]);
+    const entry = frameByTime[idx];
+    await renderFrameEntry(entry);
     seekBar.value = String((idx / frameByTime.length) * 1000);
     timeLabel.textContent = `${idx + 1}/${frameByTime.length}`;
+    syncActiveEventFromPlaybackPosition({ timeSec: entry?.t, frameIdx: entry?.frameIdx });
     idx += 1;
   }, 1000 / (fps * rate));
 }

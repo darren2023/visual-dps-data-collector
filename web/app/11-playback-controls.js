@@ -166,7 +166,9 @@ videoEl.addEventListener("seeked", () => {
   lastRenderedFrameIdx = -1;
   tickPoseFrameIdx = -1;
   resetPlaybackCollisionTracker();
-  void renderAtTime(videoEl.currentTime);
+  void renderAtTime(videoEl.currentTime).then(() => {
+    syncActiveEventFromPlaybackPosition({ timeSec: videoEl.currentTime });
+  });
 });
 
 window.addEventListener("resize", () => {
@@ -179,7 +181,6 @@ window.addEventListener("beforeunload", () => {
 });
 
 seekBar.addEventListener("input", async () => {
-  activeEventKey = null;
   lastRenderedFrameIdx = -1;
   tickPoseFrameIdx = -1;
   resetPlaybackCollisionTracker();
@@ -187,12 +188,12 @@ seekBar.addEventListener("input", async () => {
     const idx = Math.floor((seekBar.value / 1000) * frameByTime.length);
     const item = frameByTime[Math.min(idx, frameByTime.length - 1)];
     if (item) await renderFrameEntry(item);
-    renderEventJumpList();
+    syncActiveEventFromPlaybackPosition({ timeSec: item?.t, frameIdx: item?.frameIdx });
     return;
   }
   videoEl.currentTime = (seekBar.value / 1000) * videoEl.duration;
   await renderAtTime(videoEl.currentTime);
-  renderEventJumpList();
+  syncActiveEventFromPlaybackPosition({ timeSec: videoEl.currentTime });
 });
 
 bindStageLayoutWatch();

@@ -79,6 +79,7 @@ async function loadPlaybackEvents(recordId = null) {
   playbackEvents = [];
   playbackEventsFromRealtime = false;
   activeEventKey = null;
+  playbackEventLinkExact = false;
   verifiedTrueKeys.clear();
   reviewBackKey = null;
   currentEventReviewStatus = "not_started";
@@ -127,6 +128,97 @@ async function loadPlaybackEvents(recordId = null) {
   renderEventReviewList();
 }
 
+function getCurrentPlaybackTimeSec() {
+  if (videoEl.duration && Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+    return videoEl.currentTime;
+  }
+  if (!frameByTime.length) return 0;
+  const idx = Math.floor((parseInt(seekBar.value, 10) / 1000) * frameByTime.length);
+  const item = frameByTime[Math.min(Math.max(0, idx), frameByTime.length - 1)];
+  return item?.t ?? 0;
+}
+
+function getCurrentPlaybackFrameIdx() {
+  const hit = findFrameAt(getCurrentPlaybackTimeSec());
+  return hit?.frameIdx ?? null;
+}
+
+function findEventsAtFrame(frameIdx) {
+  if (frameIdx == null || !playbackEvents.length) return [];
+  const fi = parseInt(frameIdx, 10) || 0;
+  return playbackEvents.filter((e) => (parseInt(e.frame_idx, 10) || 0) === fi);
+}
+
+function isExactEventAtPosition(ev, timeSec, frameIdx) {
+  if (!ev) return false;
+  if (frameIdx != null && (parseInt(ev.frame_idx, 10) || 0) === frameIdx) return true;
+  const fps = poseData?.fps || 15;
+  const thresh = 0.5 / fps;
+  return Math.abs((Number(ev.timestamp_sec) || 0) - timeSec) <= thresh;
+}
+
+function eventsForPlaybackLink() {
+  const mode = eventFilterSelect?.value || "all";
+  if (mode === "all") return playbackEvents;
+  const filtered = filteredPlaybackEvents();
+  return filtered.length ? filtered : playbackEvents;
+}
+
+/** 当前播放位置对应事件：同帧优先，否则取时间最近 */
+function findEventForPlaybackPosition(timeSec, frameIdx = null) {
+  const pool = eventsForPlaybackLink();
+  if (!pool.length) return null;
+  if (frameIdx != null) {
+    const fi = parseInt(frameIdx, 10) || 0;
+    const atFrame = pool.filter((e) => (parseInt(e.frame_idx, 10) || 0) === fi);
+    if (atFrame.length === 1) return atFrame[0];
+    if (atFrame.length > 1) {
+      return atFrame.find((e) => e.event_type === "alarm") || atFrame[0];
+    }
+  }
+  const t = Math.max(0, Number(timeSec) || 0);
+  let best = pool[0];
+  let bestDist = Math.abs((Number(best.timestamp_sec) || 0) - t);
+  for (const ev of pool) {
+    const d = Math.abs((Number(ev.timestamp_sec) || 0) - t);
+    if (
+      d < bestDist ||
+      (d === bestDist && (Number(ev.timestamp_sec) || 0) < (Number(best.timestamp_sec) || 0))
+    ) {
+      best = ev;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+/** 进度条/播放位置变化时，同步事件复核栏的当前关联事件 */
+function syncActiveEventFromPlaybackPosition(opts = {}) {
+  if (!playbackEvents.length) return;
+  const timeSec = opts.timeSec ?? getCurrentPlaybackTimeSec();
+  const frameIdx = opts.frameIdx ?? getCurrentPlaybackFrameIdx();
+  const ev = findEventForPlaybackPosition(timeSec, frameIdx);
+  if (!ev) return;
+  const key = eventRowKey(ev);
+  const exact = isExactEventAtPosition(ev, timeSec, frameIdx);
+  if (!opts.force && key === activeEventKey && playbackEventLinkExact === exact) return;
+  activeEventKey = key;
+  playbackEventLinkExact = exact;
+  if (!opts.keepReviewBack && reviewBackKey && key !== reviewBackKey) {
+    reviewBackKey = null;
+  }
+  updateReviewDock();
+  if ($("#event-review-list-details")?.open) renderEventReviewTable();
+  updateEventMarkerActiveState();
+}
+
+function updateEventMarkerActiveState() {
+  if (!eventMarkersEl) return;
+  eventMarkersEl.querySelectorAll(".event-marker").forEach((dot) => {
+    dot.classList.toggle("active", dot.dataset.eventKey === activeEventKey);
+  });
+}
+
 async function seekToTimestamp(timeSec, frameIdx = null) {
   lastRenderedFrameIdx = -1;
   tickPoseFrameIdx = -1;
@@ -137,6 +229,7 @@ async function seekToTimestamp(timeSec, frameIdx = null) {
     seekBar.value = String((videoEl.currentTime / videoEl.duration) * 1000);
     timeLabel.textContent = formatTime(videoEl.currentTime);
     await renderAtTime(videoEl.currentTime);
+    syncActiveEventFromPlaybackPosition({ timeSec: videoEl.currentTime });
     return;
   }
 
@@ -155,17 +248,19 @@ async function seekToTimestamp(timeSec, frameIdx = null) {
       timeLabel.textContent = formatTime(t);
     }
   }
+  syncActiveEventFromPlaybackPosition({ timeSec: t, frameIdx: hit?.frameIdx ?? frameIdx });
 }
 
 async function seekToEvent(ev, { keepReviewBack = false } = {}) {
   if (!ev) return;
   activeEventKey = eventRowKey(ev);
+  playbackEventLinkExact = true;
   if (!keepReviewBack && reviewBackKey && activeEventKey === reviewBackKey) {
     reviewBackKey = null;
   }
   updateReviewDock();
   if ($("#event-review-list-details")?.open) renderEventReviewTable();
-  renderEventMarkers();
+  updateEventMarkerActiveState();
   videoEl.pause();
   await seekToTimestamp(ev.timestamp_sec, ev.frame_idx);
 }
@@ -174,6 +269,7 @@ function clearPlaybackEvents() {
   playbackEvents = [];
   playbackEventsFromRealtime = false;
   activeEventKey = null;
+  playbackEventLinkExact = false;
   verifiedTrueKeys.clear();
   reviewBackKey = null;
   if (eventReviewSaveTimer) {

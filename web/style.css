@@ -880,6 +880,12 @@ h2 {
   background: #ffd166;
 }
 
+.seek-event-markers .event-marker.active {
+  transform: translate(-50%, -50%) scale(1.35);
+  box-shadow: 0 0 0 2px #f8fafc, 0 0 6px 1px rgba(248, 250, 252, 0.85);
+  z-index: 2;
+}
+
 .seek-event-markers .event-marker.verified {
   box-shadow: 0 0 0 2px #4ade80;
   z-index: 2;

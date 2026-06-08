@@ -27,6 +27,8 @@ let playbackEvents = [];
 /** 事件列表来自回放实时重算（非采集落盘） */
 let playbackEventsFromRealtime = false;
 let activeEventKey = null;
+/** 当前关联事件是否与播放位置精确对齐（否则为「最近」关联） */
+let playbackEventLinkExact = false;
 /** 人工标为真的事件键（eventRowKey） */
 const verifiedTrueKeys = new Set();
 let eventReviewSaveTimer = null;

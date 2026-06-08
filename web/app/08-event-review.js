@@ -400,11 +400,12 @@ function updateReviewDock() {
     const globalIdx = playbackEvents.findIndex((item) => eventRowKey(item) === eventRowKey(ev));
     const globalNote =
       globalIdx >= 0 ? ` · 总序 ${globalIdx + 1}/${playbackEvents.length}` : "";
+    const linkNote = playbackEventLinkExact ? "" : " · 最近";
     if (evInFilter) {
       const idx = list.findIndex((item) => eventRowKey(item) === eventRowKey(ev));
-      posEl.textContent = `第 ${idx + 1} / ${list.length} 条${list.length !== playbackEvents.length ? `（队列）${globalNote}` : globalNote}`;
+      posEl.textContent = `第 ${idx + 1} / ${list.length} 条${linkNote}${list.length !== playbackEvents.length ? `（队列）${globalNote}` : globalNote}`;
     } else {
-      posEl.textContent = `已标真 / 不在当前队列${globalNote}`;
+      posEl.textContent = `已标真 / 不在当前队列${linkNote}${globalNote}`;
     }
   }
 
@@ -569,11 +570,14 @@ function renderEventMarkers() {
   if (!dur || !playbackEvents.length) return;
 
   filteredPlaybackEvents().forEach((ev) => {
+    const key = eventRowKey(ev);
     const pct = Math.min(100, Math.max(0, (ev.timestamp_sec / dur) * 100));
     const dot = document.createElement("button");
     dot.type = "button";
     const verifiedCls = isEventVerified(ev) ? " verified" : "";
-    dot.className = `event-marker ${ev.event_type}${verifiedCls}`;
+    const activeCls = key === activeEventKey ? " active" : "";
+    dot.className = `event-marker ${ev.event_type}${verifiedCls}${activeCls}`;
+    dot.dataset.eventKey = key;
     dot.style.left = `${pct}%`;
     const verifiedNote = isEventVerified(ev) ? " · 已标真" : "";
     dot.title = `${ev.event_type === "alarm" ? "告警" : "碰撞"} ${formatTime(ev.timestamp_sec)} · ${formatEventTokens(ev.box_tokens)}${verifiedNote}`;
