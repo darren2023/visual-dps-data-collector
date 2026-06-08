@@ -1,13 +1,29 @@
+# visual-dps-datacollect 运行时依赖（GPU / Windows 默认）
+#
+# 推荐安装（避免 rtmlib 拉入 onnxruntime CPU 与 opencv-python 冲突包）：
+#   pip install -r requirements.txt
+#   pip install "rtmlib>=0.0.13" --no-deps
+#
+# 仅 CPU 推理见 requirements-cpu.txt
+# 开发/脚本测试见 requirements-dev.txt
+
+# 视频读写、碰撞几何（无 GUI）
 opencv-python-headless>=4.8.0
 numpy>=1.24.0,<2
-# 默认 GPU 推理（与 visual-dps inference-lite-gpu 一致）
-# 勿与 onnxruntime（CPU 版）同时安装，否则 import 到 CPU 包、无 CUDAExecutionProvider
+
+# ONNX 推理（勿与 onnxruntime CPU 包共存）
 onnxruntime-gpu>=1.20.0
-# ORT CUDA 需要 cuDNN 9 DLL（Windows 常用 pip 安装，国内镜像较快）
-nvidia-cudnn-cu12
-rtmlib>=0.0.13
+# Windows 下 ORT CUDA 常需 pip 版 cuDNN 9 DLL；Linux 若已有系统 cuDNN 可省略
+nvidia-cudnn-cu12; platform_system == "Windows"
+
+# RTMPose/RTMDet 封装（须 --no-deps 安装，见文件头说明）
+# rtmlib>=0.0.13
+
+# Web 服务
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9
+
+# Excel 导出、Parquet 存储
 openpyxl>=3.1.0
 pyarrow>=14.0.0

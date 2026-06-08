@@ -1,0 +1,14 @@
+# CPU 推理环境（无 CUDA）
+# 用法：
+#   pip install -r requirements-cpu.txt
+#   pip install "rtmlib>=0.0.13" --no-deps
+
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2
+onnxruntime>=1.20.0
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+openpyxl>=3.1.0
+pyarrow>=14.0.0
