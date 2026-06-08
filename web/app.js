@@ -903,14 +903,19 @@ function recordSearchBlob(s) {
 
 function reviewStatusLabel(status) {
   if (status === "completed") return "已复核";
+  if (status === "no_collision") return "无碰撞";
   if (status === "in_progress") return "复核中";
   return "未复核";
 }
 
 function reviewStatusClass(status) {
-  if (status === "completed") return "review-completed";
+  if (status === "completed" || status === "no_collision") return "review-completed";
   if (status === "in_progress") return "review-in-progress";
   return "review-not-started";
+}
+
+function isReviewTerminalStatus(status) {
+  return status === "completed" || status === "no_collision";
 }
 
 function renderReviewPill(status, label = "") {
@@ -954,7 +959,7 @@ function applyEventReviewPatchFromBody(body) {
 function aggregateReviewStatus(items) {
   const statuses = (items || []).map((s) => s.event_review_status || "not_started");
   if (!statuses.length) return "not_started";
-  if (statuses.every((st) => st === "completed")) return "completed";
+  if (statuses.every((st) => isReviewTerminalStatus(st))) return "completed";
   if (statuses.every((st) => st === "not_started")) return "not_started";
   return "in_progress";
 }
@@ -1332,7 +1337,8 @@ function bindStageLayoutWatch() {
 }
 
 function eventRowKey(ev) {
-  return `${ev.event_type}:${ev.frame_idx}:${(ev.box_tokens || []).join(",")}`;
+  const tokens = [...(ev.box_tokens || [])].map(String).filter(Boolean).sort();
+  return `${ev.event_type}:${ev.frame_idx}:${tokens.join(",")}`;
 }
 
 function buildEventsFromFrames(frames) {
@@ -1406,12 +1412,27 @@ function applyVerifiedFlagsToEvents() {
   });
 }
 
-function setEventVerified(ev, verified, { persist = true } = {}) {
+function setEventVerified(ev, verified, { persist = true, flush = false } = {}) {
   const key = eventRowKey(ev);
   if (verified) verifiedTrueKeys.add(key);
   else verifiedTrueKeys.delete(key);
   ev.verified_true = !!verified;
-  if (persist && currentRecordId) scheduleSaveEventReview();
+  if (!verified && isReviewTerminalStatus(currentEventReviewStatus)) {
+    currentEventReviewStatus = "in_progress";
+    patchPlaybackRecordReviewStatus(currentRecordId, "in_progress", "复核中");
+  }
+  if (persist && currentRecordId) {
+    if (flush) void flushSaveEventReview();
+    else scheduleSaveEventReview();
+  }
+}
+
+async function flushSaveEventReview() {
+  if (eventReviewSaveTimer) {
+    clearTimeout(eventReviewSaveTimer);
+    eventReviewSaveTimer = null;
+  }
+  await saveEventReviewNow();
 }
 
 function setEventReviewSaveStatus(text, kind = "") {
@@ -1462,9 +1483,12 @@ async function saveEventReviewNow() {
     if (Array.isArray(body.events)) {
       playbackEvents = body.events;
       syncVerifiedKeysFromEvents(playbackEvents);
+      applyVerifiedFlagsToEvents();
     }
-    currentEventReviewStatus = body.event_review_status || "in_progress";
+    currentEventReviewStatus =
+      body.event_review_status || body.event_review?.status || currentEventReviewStatus || "in_progress";
     applyEventReviewPatchFromBody(body);
+    updateReviewDock();
     const n = body.verified_true_count ?? verified_true.length;
     setEventReviewSaveStatus(`已保存 · 标真 ${n} 条`);
     updateReviewDock();
@@ -1559,22 +1583,34 @@ function updateReviewDock() {
     const reviewNote =
       currentEventReviewStatus === "completed"
         ? " · 记录已复核"
-        : currentEventReviewStatus === "in_progress"
-          ? " · 复核中"
-          : "";
+        : currentEventReviewStatus === "no_collision"
+          ? " · 无碰撞"
+          : currentEventReviewStatus === "in_progress"
+            ? " · 复核中"
+            : "";
     summaryEl.textContent = `全部事件列表（${playbackEvents.length} 条，已标真 ${verifiedN}${reviewNote}）`;
   }
 
   const completeBtn = $("#event-review-complete-btn");
   if (completeBtn) {
-    completeBtn.disabled = currentEventReviewStatus === "completed" || !currentRecordId;
-    completeBtn.textContent =
-      currentEventReviewStatus === "completed" ? "已复核完成" : "标记复核完成";
+    const reviewDone = isReviewTerminalStatus(currentEventReviewStatus);
+    completeBtn.disabled = reviewDone || !currentRecordId;
+    if (currentEventReviewStatus === "no_collision") {
+      completeBtn.textContent = "无碰撞（已复核）";
+    } else {
+      completeBtn.textContent = reviewDone ? "已复核完成" : "标记复核完成";
+    }
   }
 
   if (!playbackEvents.length) {
-    if (posEl) posEl.textContent = "无事件";
-    if (metaEl) metaEl.textContent = "—";
+    if (posEl) {
+      posEl.textContent = isReviewTerminalStatus(currentEventReviewStatus) ? "无碰撞事件" : "无事件";
+    }
+    if (metaEl) {
+      metaEl.textContent = isReviewTerminalStatus(currentEventReviewStatus)
+        ? "无需人工复核"
+        : "—";
+    }
     verifiedTag?.classList.add("hidden");
     return;
   }
@@ -1635,7 +1671,7 @@ function renderEventReviewTable(list = null) {
       const key = input.dataset.eventKey;
       const item = playbackEvents.find((row) => eventRowKey(row) === key);
       if (!item) return;
-      setEventVerified(item, input.checked);
+      setEventVerified(item, input.checked, { flush: !input.checked });
       updateReviewDock();
       renderEventReviewTable();
       renderEventMarkers();
@@ -1653,10 +1689,10 @@ function renderEventReviewTable(list = null) {
   scrollActiveEventRowIntoView();
 }
 
-function markActiveEventVerified(verified) {
+async function markActiveEventVerified(verified) {
   const ev = getActiveFilteredEvent();
   if (!ev) return;
-  setEventVerified(ev, verified);
+  setEventVerified(ev, verified, { flush: !verified });
   updateReviewDock();
   if ($("#event-review-list-details")?.open) renderEventReviewTable();
   renderEventMarkers();
@@ -1869,9 +1905,18 @@ async function loadPlaybackEvents(recordId = null) {
           body.event_review_status ||
           (body.event_review?.status
             ? body.event_review.status
-            : body.event_review?.verified_true?.length || body.event_review?.updated_at
-              ? "in_progress"
-              : "not_started");
+            : body.count === 0
+              ? "no_collision"
+              : body.event_review?.verified_true?.length || body.event_review?.updated_at
+                ? "in_progress"
+                : "not_started");
+        if (body.count === 0 && currentRecordId) {
+          patchPlaybackRecordReviewStatus(
+            currentRecordId,
+            currentEventReviewStatus,
+            body.event_review_label || reviewStatusLabel(currentEventReviewStatus)
+          );
+        }
       }
     } catch {
       /* 忽略 */
@@ -2562,7 +2607,7 @@ function initEventReviewControls() {
   $("#event-prev-btn")?.addEventListener("click", () => navigateReviewEvent(-1));
   $("#event-skip-next-btn")?.addEventListener("click", () => void skipToNextEvent());
   $("#event-mark-true-next-btn")?.addEventListener("click", () => void confirmTrueAndNext());
-  $("#event-unmark-btn")?.addEventListener("click", () => markActiveEventVerified(false));
+  $("#event-unmark-btn")?.addEventListener("click", () => void markActiveEventVerified(false));
   $("#event-review-complete-btn")?.addEventListener("click", () => void markEventReviewCompleted());
 
   $("#event-review-list-details")?.addEventListener("toggle", (e) => {
@@ -2584,7 +2629,7 @@ function initEventReviewControls() {
       void skipToNextEvent();
     } else if (e.key === "u" || e.key === "U") {
       e.preventDefault();
-      markActiveEventVerified(false);
+      void markActiveEventVerified(false);
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       navigateReviewEvent(1);

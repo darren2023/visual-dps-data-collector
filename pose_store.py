@@ -20,11 +20,14 @@ EVENT_REVIEW_SCHEMA = 1
 REVIEW_STATUS_COMPLETED = "completed"
 REVIEW_STATUS_IN_PROGRESS = "in_progress"
 REVIEW_STATUS_NOT_STARTED = "not_started"
+REVIEW_STATUS_NO_COLLISION = "no_collision"
 REVIEW_STATUS_LABELS = {
     REVIEW_STATUS_COMPLETED: "已复核",
     REVIEW_STATUS_IN_PROGRESS: "复核中",
     REVIEW_STATUS_NOT_STARTED: "未复核",
+    REVIEW_STATUS_NO_COLLISION: "无碰撞",
 }
+REVIEW_STATUS_TERMINAL = frozenset({REVIEW_STATUS_COMPLETED, REVIEW_STATUS_NO_COLLISION})
 STORAGE_V2_PARQUET = "v2_parquet"
 STORAGE_V1_JSON = "v1_json"
 
@@ -668,16 +671,51 @@ def load_event_review(locator: RecordLocator) -> dict[str, Any]:
     }
 
 
-def resolve_event_review_status(review: dict[str, Any]) -> str:
-    """未复核 / 复核中 / 已复核。"""
+def resolve_event_review_status(
+    review: dict[str, Any],
+    *,
+    event_count: int | None = None,
+) -> str:
+    """未复核 / 复核中 / 已复核 / 无碰撞。"""
     status = str(review.get("status") or "").strip().lower()
+    if status == REVIEW_STATUS_NO_COLLISION:
+        return REVIEW_STATUS_NO_COLLISION
     if status == REVIEW_STATUS_COMPLETED:
         return REVIEW_STATUS_COMPLETED
     if status == REVIEW_STATUS_IN_PROGRESS:
         return REVIEW_STATUS_IN_PROGRESS
+    if event_count == 0 and not review.get("verified_true"):
+        return REVIEW_STATUS_NO_COLLISION
+    if review.get("event_total") == 0 and not review.get("verified_true"):
+        return REVIEW_STATUS_NO_COLLISION
     if review.get("verified_true") or review.get("updated_at"):
         return REVIEW_STATUS_IN_PROGRESS
     return REVIEW_STATUS_NOT_STARTED
+
+
+def ensure_no_collision_review_completed(
+    locator: RecordLocator,
+    *,
+    event_count: int | None = None,
+) -> dict[str, Any]:
+    """无碰撞/告警事件时持久化 event_review（status=no_collision）。"""
+    if event_count is None:
+        try:
+            event_count = len(load_events(locator))
+        except (RuntimeError, OSError, ValueError):
+            return load_event_review(locator)
+    if event_count > 0:
+        return load_event_review(locator)
+
+    review = load_event_review(locator)
+    current = resolve_event_review_status(review, event_count=0)
+    if current in REVIEW_STATUS_TERMINAL:
+        return review
+    if current == REVIEW_STATUS_IN_PROGRESS and review.get("verified_true"):
+        return review
+
+    save_event_review(locator, [], status=REVIEW_STATUS_NO_COLLISION, event_total=0)
+    return load_event_review(locator)
 
 
 def event_review_status_label(status: str) -> str:
@@ -749,11 +787,15 @@ def save_event_review(
         payload["status"] = st
         if st == REVIEW_STATUS_COMPLETED:
             payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+        elif st == REVIEW_STATUS_NO_COLLISION:
+            payload.pop("completed_at", None)
+        elif st == REVIEW_STATUS_IN_PROGRESS:
+            payload.pop("completed_at", None)
         elif existing.get("completed_at") and st != REVIEW_STATUS_COMPLETED:
             payload.pop("completed_at", None)
-    elif prev_status == REVIEW_STATUS_COMPLETED:
-        payload["status"] = REVIEW_STATUS_COMPLETED
-        if existing.get("completed_at"):
+    elif prev_status in REVIEW_STATUS_TERMINAL:
+        payload["status"] = prev_status
+        if prev_status == REVIEW_STATUS_COMPLETED and existing.get("completed_at"):
             payload["completed_at"] = existing.get("completed_at")
     elif normalized or verified_true is not None:
         payload["status"] = REVIEW_STATUS_IN_PROGRESS

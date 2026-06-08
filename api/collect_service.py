@@ -25,7 +25,13 @@ from config_loader import (
     resolve_config_path,
     sanitize_file_stem,
 )
-from pose_store import STORAGE_V2_PARQUET, meta_sidecar_path
+from pose_store import (
+    STORAGE_V2_PARQUET,
+    ensure_no_collision_review_completed,
+    load_events,
+    locate_record,
+    meta_sidecar_path,
+)
 
 from api.job_store import batch_timing_from_progress, update_job
 from api.job_store import _jobs, _jobs_lock
@@ -240,6 +246,12 @@ def run_job(
         sidecar = meta_sidecar_path(paths.json_dir, record_id)
         with open(sidecar, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
+        locator = locate_record(paths.json_dir, record_id)
+        if locator:
+            try:
+                ensure_no_collision_review_completed(locator, event_count=len(load_events(locator)))
+            except (RuntimeError, OSError, ValueError):
+                pass
         if collect_config and pose_path.is_dir():
             manifest_path = pose_path / "manifest.json"
             if manifest_path.is_file():

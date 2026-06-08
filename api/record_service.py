@@ -29,7 +29,10 @@ from config_loader import (
 )
 from model_assets import VIDEO_EXTENSIONS
 from pose_store import (
+    REVIEW_STATUS_NO_COLLISION,
+    REVIEW_STATUS_NOT_STARTED,
     STORAGE_V2_PARQUET,
+    ensure_no_collision_review_completed,
     event_review_status_label,
     iter_active_records,
     load_event_review,
@@ -387,6 +390,10 @@ def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str,
 
     review_raw = load_event_review_raw(locator)
     review_status = resolve_event_review_status(review_raw)
+    if not collision_enabled and review_status == REVIEW_STATUS_NOT_STARTED:
+        review_status = REVIEW_STATUS_NO_COLLISION
+    elif review_raw.get("event_total") == 0 and not review_raw.get("verified_true"):
+        review_status = resolve_event_review_status(review_raw, event_count=0)
 
     if locator.storage == STORAGE_V2_PARQUET:
         pose_file = f"{record_id}/manifest.json"
@@ -494,8 +501,12 @@ def record_meta_for_list(locator) -> dict[str, Any]:
     else:
         meta.pop("video_url", None)
 
-    review = load_event_review(locator)
-    review_status = resolve_event_review_status(review)
+    try:
+        review = ensure_no_collision_review_completed(locator)
+    except (RuntimeError, OSError, ValueError):
+        review = load_event_review(locator)
+    event_count = int(review.get("event_total") or 0) if review.get("event_total") is not None else None
+    review_status = resolve_event_review_status(review, event_count=event_count)
     meta["event_review_status"] = review_status
     meta["event_review_label"] = event_review_status_label(review_status)
     meta["event_review_verified_count"] = len(review.get("verified_true") or [])
