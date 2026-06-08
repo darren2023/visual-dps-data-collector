@@ -1,0 +1,18 @@
+# Linux GPU 推理环境（ONNX Runtime CUDA 12 + cuDNN 9）
+#
+# 推荐：bash scripts/setup_linux.sh
+# 手动：
+#   pip install -r requirements-linux-gpu.txt
+#   pip install "rtmlib>=0.0.13" --no-deps
+
+-r requirements-base.txt
+
+# 勿与 onnxruntime（CPU 包）共存
+onnxruntime-gpu>=1.20.0
+
+# ORT CUDA 12 依赖 cuDNN 9；pip 包装入 site-packages/nvidia/*/lib
+# 运行时由 ort_cuda_setup.py 预加载（Linux 进程内改 LD_LIBRARY_PATH 对 ORT 无效）
+nvidia-cudnn-cu12>=9.1.0
+nvidia-cublas-cu12>=12.1.0
+nvidia-cuda-runtime-cu12>=12.1.0
+nvidia-cuda-nvrtc-cu12>=12.1.0

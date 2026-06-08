@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-# 必须在 import onnxruntime / rtmlib 之前加载 NVIDIA DLL（Windows cuDNN）
+# 必须在 import onnxruntime / rtmlib 之前配置 NVIDIA 库路径（Windows PATH / Linux 预加载）
 from ort_cuda_setup import prepare_ort_cuda_dll_path
 
 prepare_ort_cuda_dll_path()

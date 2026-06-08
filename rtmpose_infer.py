@@ -29,14 +29,16 @@ def ort_available_providers() -> list[str]:
 
 def assert_cuda_ort_available() -> None:
     """配置为 GPU 时验证 CUDA Session 能创建（避免仅有 EP 名但缺 cuDNN DLL）。"""
+    import sys
+
     from ort_cuda_setup import nvidia_dll_dirs_available, prepare_ort_cuda_dll_path
 
     dirs = nvidia_dll_dirs_available()
-    if not dirs:
+    if not dirs and sys.platform == "win32":
         raise RuntimeError(
             "已请求 GPU 推理，但未找到 nvidia-cudnn-cu12。"
-            " 请在当前 conda 环境执行: pip install nvidia-cudnn-cu12"
-            " -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
+            " 请执行: pip install -r requirements-windows-gpu.txt"
+            " 或 powershell -File scripts/setup_windows.ps1"
         )
     prepare_ort_cuda_dll_path()
     providers = ort_available_providers()
@@ -58,10 +60,17 @@ def assert_cuda_ort_available() -> None:
     if probe.is_file():
         sess = ort.InferenceSession(str(probe), providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
         if sess.get_providers()[0] != "CUDAExecutionProvider":
+            if sys.platform == "win32":
+                hint = "常见原因: 缺 cudnn64_9.dll，请 pip install -r requirements-windows-gpu.txt"
+            else:
+                hint = (
+                    "常见原因: 缺 libcudnn.so.9，请 pip install -r requirements-linux-gpu.txt"
+                    " 或 bash scripts/setup_linux.sh"
+                )
             raise RuntimeError(
-                "CUDAExecutionProvider 不可用（常见原因: 缺 cudnn64_9.dll）。"
+                f"CUDAExecutionProvider 不可用。{hint}"
                 f" 当前 EP: {sess.get_providers()}。"
-                f" 已加入 DLL 路径: {dirs[:2]}…"
+                f" 已加入库路径: {dirs[:2]}…"
             )
 
 

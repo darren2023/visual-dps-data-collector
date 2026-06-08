@@ -4,9 +4,70 @@
 
 ## 安装
 
+**前置**：Python 3.10+、NVIDIA 驱动（GPU 推理）。推荐 conda 独立环境。
+
+### 一键部署（推荐）
+
+**Linux**（创建 conda 环境 `visual-dps`、装依赖、下模型、验 GPU）：
+
 ```bash
-pip install -r requirements.txt
+bash scripts/setup_linux.sh
+conda activate visual-dps
 ```
+
+**Windows**（PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1
+```
+
+常用参数：
+
+| 平台 | 仅装依赖（已有 Python 环境） | CPU 推理 | 跳过模型下载 |
+|------|------------------------------|----------|--------------|
+| Linux | `bash scripts/setup_linux.sh --skip-conda` | `--cpu` | `--skip-models` |
+| Windows | 直接用 `scripts/install_requirements.ps1` | `-Cpu` | `-SkipModels` |
+
+### 依赖文件
+
+| 文件 | 用途 |
+|------|------|
+| `requirements-base.txt` | 公共依赖（OpenCV、FastAPI 等） |
+| `requirements-linux-gpu.txt` | Linux GPU（onnxruntime-gpu + nvidia cuDNN/CUDA pip 包） |
+| `requirements-windows-gpu.txt` | Windows GPU（onnxruntime-gpu + nvidia-cudnn-cu12） |
+| `requirements-cpu.txt` | CPU 推理（onnxruntime） |
+| `requirements-dev.txt` | 开发/脚本测试（httpx） |
+| `requirements.txt` | 索引说明（请用上面平台专用文件） |
+
+**手动安装（GPU）**：
+
+```bash
+# Linux
+pip install -r requirements-linux-gpu.txt
+pip install "rtmlib>=0.0.13" --no-deps
+
+# Windows
+pip install -r requirements-windows-gpu.txt
+pip install "rtmlib>=0.0.13" --no-deps
+```
+
+> `rtmlib` 必须用 `--no-deps`，否则会拉入 `onnxruntime`（CPU）与 `opencv-python`，与 `onnxruntime-gpu` / `opencv-python-headless` 冲突。
+
+### GPU 验证
+
+```bash
+python scripts/verify_gpu.py
+```
+
+成功时应看到 `ORT 可用 EP` 含 `CUDAExecutionProvider`，以及 `ORT 实际 EP: CUDAExecutionProvider`。
+
+### GPU 说明（Linux / Windows）
+
+- 默认开启 GPU（`config.json` → `models.use_gpu: true`）。
+- 启动 `server.py` 或 `collect_pose.py` 时，日志应出现 `推理设备: cuda`。
+- **Windows**：`ort_cuda_setup.py` 在 import ORT 前把 `nvidia/*/bin` 加入 PATH。
+- **Linux**：除 `LD_LIBRARY_PATH` 外，还须预加载 `libcudnn.so.9` 等（已在 `ort_cuda_setup.py` 实现）；`setup_linux.sh` 会写入 conda `activate.d` 供子进程使用。
+- 强制 CPU：`"use_gpu": false` 或环境变量 `INFERENCE_USE_GPU=0`。
 
 ## Web 前端
 
@@ -59,7 +120,7 @@ python server.py
 | `source` | `video` | CLI 默认视频路径 |
 | `server` | `host` / `port` | Web 服务 |
 
-GPU：默认开启（`models.use_gpu: true` + `onnxruntime-gpu`）。启动日志应出现 `推理设备: cuda` 与 `ORT 实际 EP: CUDAExecutionProvider`。强制 CPU 可设 `"use_gpu": false` 或 `set INFERENCE_USE_GPU=0`。
+GPU 配置见上文「安装 → GPU 说明」。
 
 ## ONNX 模型目录
 

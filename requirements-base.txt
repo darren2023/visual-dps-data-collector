@@ -1,0 +1,17 @@
+# visual-dps-datacollect 公共运行时依赖（Linux / Windows 共用）
+# GPU 推理请使用 requirements-linux-gpu.txt 或 requirements-windows-gpu.txt
+# CPU 推理见 requirements-cpu.txt
+
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+openpyxl>=3.1.0
+pyarrow>=14.0.0
+
+# rtmlib 须 --no-deps 安装（避免拉入 onnxruntime CPU 与 opencv-python 冲突包）
+# pip install "rtmlib>=0.0.13" --no-deps
+tqdm>=4.66.0
