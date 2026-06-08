@@ -20,6 +20,7 @@
   - 输出 slug：1-2组-1 → 1-2-1；1-2组-1(2) → 1-2-1-(2)；无后缀且已占用则自动递增
   - --with-collision：按机位从 reflection.json 解析标注并计算 collisions / alarm_collisions
   - 碰撞模式下复用 annotations/{编号}.json，不为每个视频新建 clip_*.json
+  - 保存配套视频时仅复制到 localdata/video，绝不移动或删除源目录中的 MP4
 """
 
 from __future__ import annotations
@@ -493,7 +494,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"🎬 视频数: {total}（扩展名: {', '.join(sorted(VIDEO_EXTENSIONS))}）")
     print(f"📦 姿态: {settings.backend} · 检测: {settings.det_backend}")
     print(f"⏱️ 采集节拍 frame_rate={settings.frame_rate}（0=全速）")
-    print(f"💾 保存配套视频: {'是' if settings.save_video else '否'}")
+    if settings.save_video:
+        print("💾 保存配套视频: 是（复制到 localdata/video，不移动源文件）")
+    else:
+        print("💾 保存配套视频: 否")
     print(f"🦴 模式: {'骨架 + 碰撞' if args.with_collision else '仅骨架（不算碰撞）'}")
     if args.group_by_subfolder:
         print(f"📂 机位分组: 按第一级子目录（{len(slug_by_folder)} 个文件夹）")

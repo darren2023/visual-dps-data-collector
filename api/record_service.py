@@ -292,12 +292,21 @@ def persist_record_video(
     *,
     camera_slug: str | None = None,
 ) -> Path:
+    """复制配套视频到 localdata/video；绝不移动或删除源路径上的文件。"""
+    src = Path(src)
+    if not src.is_file():
+        raise FileNotFoundError(f"源视频不存在: {src}")
     paths = resolve_app_paths()
     suffix = src.suffix.lower() if src.suffix else ".mp4"
     dest = record_video_path(paths, pose_path, suffix, camera_slug=camera_slug)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.resolve() == src.resolve():
+        raise ValueError(f"源与目标相同，拒绝操作: {src}")
     if dest.is_file():
         dest.unlink()
-    shutil.move(str(src), str(dest))
+    shutil.copy2(src, dest)
+    if not src.is_file():
+        raise RuntimeError(f"源视频在复制后丢失（不应发生）: {src}")
     return dest
 
 
