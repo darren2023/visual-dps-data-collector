@@ -27,6 +27,7 @@ from config_loader import (
 )
 from pose_store import (
     STORAGE_V2_PARQUET,
+    collect_result_has_skeleton,
     ensure_no_collision_review_completed,
     load_events,
     locate_record,
@@ -182,6 +183,7 @@ def run_job(
             alarm_cooldown_frames=alarm_cd,
         )
         record_id = record_id_from_pose_path(pose_path)
+        has_skeleton = collect_result_has_skeleton(data)
         saved_annotation: Path | None = None
         if annotation_path and annotation_path.is_file():
             playback_ann = persist_playback_annotation(
@@ -218,6 +220,7 @@ def run_job(
             "det_variant": det_variant,
             "det_model": data.get("det_model"),
             "frame_count": data.get("frame_count", 0),
+            "has_skeleton": has_skeleton,
             "elapsed_sec": data.get("elapsed_sec"),
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "save_video": bool(save_video),
@@ -249,7 +252,12 @@ def run_job(
         locator = locate_record(paths.json_dir, record_id)
         if locator:
             try:
-                ensure_no_collision_review_completed(locator, event_count=len(load_events(locator)))
+                if not has_skeleton:
+                    ensure_no_collision_review_completed(locator, event_count=0)
+                else:
+                    ensure_no_collision_review_completed(
+                        locator, event_count=len(load_events(locator))
+                    )
             except (RuntimeError, OSError, ValueError):
                 pass
         if collect_config and pose_path.is_dir():

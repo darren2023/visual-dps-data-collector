@@ -1,6 +1,8 @@
 /** 回放记录列表与打开记录 */
 /** 当前查看的机位目录（null = 一级机位列表） */
 let playbackSelectedCameraSlug = null;
+/** 用户主动返回一级机位列表时置 true，避免播放中记录导致自动下钻 */
+let playbackCameraListPinned = false;
 let playbackRecordsCache = [];
 
 function recordGroupKey(s) {
@@ -31,6 +33,7 @@ function cameraSlugForRecordId(recordId) {
 }
 
 function focusPlaybackCameraForRecord(recordId) {
+  playbackCameraListPinned = false;
   const slug = cameraSlugForRecordId(recordId);
   if (slug) playbackSelectedCameraSlug = slug;
 }
@@ -162,6 +165,7 @@ function bindRecordListEvents(list) {
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       playbackSelectedCameraSlug = null;
+      playbackCameraListPinned = true;
       renderPlaybackRecordsList(playbackRecordsCache);
     });
   });
@@ -170,6 +174,7 @@ function bindRecordListEvents(list) {
       const slug = li.dataset.cameraSlug;
       if (!slug) return;
       playbackSelectedCameraSlug = slug;
+      playbackCameraListPinned = false;
       renderPlaybackRecordsList(playbackRecordsCache);
     };
     li.addEventListener("click", open);
@@ -246,6 +251,7 @@ function renderPlaybackRecordsList(items) {
     list.innerHTML = "<p class='hint playback-records-empty'>暂无记录（请先在采集页完成采集）</p>";
     if (countEl) countEl.textContent = "";
     playbackSelectedCameraSlug = null;
+    playbackCameraListPinned = false;
     selectedPlaybackRecord = null;
     updatePlaybackLoadButton();
     return;
@@ -260,7 +266,7 @@ function renderPlaybackRecordsList(items) {
   if (playbackSelectedCameraSlug && !groups.has(playbackSelectedCameraSlug)) {
     playbackSelectedCameraSlug = null;
   }
-  if (!playbackSelectedCameraSlug && keepId) {
+  if (!playbackSelectedCameraSlug && keepId && !playbackCameraListPinned) {
     const autoSlug = cameraSlugForRecordId(keepId);
     if (autoSlug && groups.has(autoSlug)) playbackSelectedCameraSlug = autoSlug;
   }
@@ -374,6 +380,7 @@ async function loadSavedRecordVideo(recordId) {
 
 async function startVideoPlayback(hintPrefix = "") {
   try {
+    readPlaybackSpeedFromSelect();
     await videoEl.play();
     cancelAnimationFrame(rafId);
     tickPoseFrameIdx = -1;

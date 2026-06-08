@@ -289,6 +289,22 @@
           <button type="button" id="play-btn">播放</button>
           <button type="button" id="pause-btn">暂停</button>
           <button type="button" id="end-playback-btn">停止回放</button>
+          <label class="playback-speed-label">
+            倍速
+            <select id="playback-speed" title="播放倍速">
+              <option value="0.5">0.5×</option>
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2">2×</option>
+              <option value="3">3×</option>
+              <option value="4">4×</option>
+              <option value="5">5×</option>
+              <option value="6">6×</option>
+              <option value="8">8×</option>
+            </select>
+          </label>
           <a id="playback-export-xlsx" class="btn-link hidden" href="#" download>导出 Excel</a>
           <span id="time-label">0:00</span>
         </div>
@@ -366,12 +382,12 @@
   <script src="app/03-tabs.js?v=34"></script>
   <script src="app/04-collision-config.js?v=34"></script>
   <script src="app/05-collect.js?v=34"></script>
-  <script src="app/06-records.js?v=35"></script>
-  <script src="app/07-playback-stage.js?v=34"></script>
+  <script src="app/06-records.js?v=37"></script>
+  <script src="app/07-playback-stage.js?v=35"></script>
   <script src="app/08-event-review.js?v=34"></script>
   <script src="app/09-playback-events.js?v=34"></script>
-  <script src="app/10-render-collision.js?v=34"></script>
-  <script src="app/11-playback-controls.js?v=34"></script>
+  <script src="app/10-render-collision.js?v=35"></script>
+  <script src="app/11-playback-controls.js?v=35"></script>
   <script src="annotate.js?v=11"></script>
 </body>
 </html>

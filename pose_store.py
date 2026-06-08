@@ -702,6 +702,39 @@ def resolve_event_review_status(
     return REVIEW_STATUS_NOT_STARTED
 
 
+def collect_result_has_skeleton(data: dict[str, Any]) -> bool:
+    """采集结果中是否包含至少一帧人体骨架。"""
+    for fr in data.get("frames") or []:
+        if not isinstance(fr, dict):
+            continue
+        if fr.get("persons"):
+            return True
+    return False
+
+
+def record_has_skeleton_data(
+    locator: RecordLocator,
+    meta: dict[str, Any] | None = None,
+) -> bool:
+    """记录是否含人体骨架（优先读 meta.has_skeleton，否则查 Parquet/JSON）。"""
+    if isinstance(meta, dict) and "has_skeleton" in meta:
+        return bool(meta.get("has_skeleton"))
+    if locator.storage == STORAGE_V2_PARQUET:
+        skel_path = locator.path / SKELETON_FILE
+        if not skel_path.is_file():
+            return False
+        try:
+            _, pq = _require_pyarrow()
+            return int(pq.read_metadata(skel_path).num_rows or 0) > 0
+        except Exception:
+            return False
+    try:
+        data = load_manifest(locator)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        return False
+    return collect_result_has_skeleton(data)
+
+
 def ensure_no_collision_review_completed(
     locator: RecordLocator,
     *,

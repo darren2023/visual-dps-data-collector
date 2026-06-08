@@ -39,6 +39,7 @@ from pose_store import (
     locate_record as find_record,
     meta_sidecar_path,
     persisted_event_review_status,
+    record_has_skeleton_data,
     resolve_event_review_status,
 )
 
@@ -372,6 +373,14 @@ def _parse_event_total(review: dict[str, Any]) -> int | None:
 def sync_event_review_for_list(locator) -> tuple[dict[str, Any], str]:
     """列表/元数据：无碰撞记录写入 event_review.json，状态与已复核一样常驻磁盘。"""
     review = load_event_review(locator)
+    meta = _read_sidecar_meta(locator.record_id, locator)
+    if not record_has_skeleton_data(locator, meta):
+        try:
+            review = ensure_no_collision_review_completed(locator, event_count=0)
+        except (RuntimeError, OSError, ValueError):
+            pass
+        status = resolve_event_review_status(review, event_count=0)
+        return review, status
     cached_total = _parse_event_total(review)
     if is_persisted_review_terminal(review):
         status = persisted_event_review_status(review)

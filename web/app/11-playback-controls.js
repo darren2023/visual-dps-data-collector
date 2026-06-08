@@ -60,9 +60,21 @@ $("#playback-video").addEventListener("change", async (e) => {
   videoEl.addEventListener("loadedmetadata", onMeta);
 });
 
+function initPlaybackSpeedControl() {
+  const sel = $("#playback-speed");
+  if (!sel || sel.dataset.bound) return;
+  sel.dataset.bound = "1";
+  sel.addEventListener("change", () => {
+    readPlaybackSpeedFromSelect();
+    restartJsonOnlyPlaybackIfActive();
+  });
+  readPlaybackSpeedFromSelect();
+}
+
 $("#play-btn").addEventListener("click", async () => {
   if (videoEl.src) {
     videoEl.style.display = "block";
+    readPlaybackSpeedFromSelect();
     try {
       await videoEl.play();
     } catch (err) {
@@ -101,6 +113,7 @@ videoEl.addEventListener("ended", () => {
 });
 
 videoEl.addEventListener("loadedmetadata", () => {
+  readPlaybackSpeedFromSelect();
   syncCanvasSize();
   redrawCurrentFrame();
   renderEventMarkers();
@@ -183,6 +196,7 @@ seekBar.addEventListener("input", async () => {
 });
 
 bindStageLayoutWatch();
+initPlaybackSpeedControl();
 initEventReviewControls();
 loadRecords();
 initPlaybackRecordFilter();

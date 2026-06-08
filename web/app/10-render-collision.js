@@ -462,6 +462,12 @@ function formatTime(sec) {
 }
 
 let jsonOnlyTimer = null;
+let jsonOnlyFrameIdx = 0;
+
+function restartJsonOnlyPlaybackIfActive() {
+  if (!jsonOnlyTimer) return;
+  startJsonOnlyPlayback(jsonOnlyFrameIdx);
+}
 
 function stopPlayback() {
   videoEl.pause();
@@ -478,18 +484,21 @@ function finishPlaybackSession() {
   setPlaybackInfo("回放已停止。");
 }
 
-function startJsonOnlyPlayback() {
+function startJsonOnlyPlayback(startIdx = 0) {
   if (!frameByTime.length) return;
   const fps = poseData.fps || 15;
-  let idx = 0;
+  const rate = Number.isFinite(playbackSpeed) && playbackSpeed > 0 ? playbackSpeed : 1;
+  let idx = Math.max(0, Math.min(startIdx, frameByTime.length - 1));
+  jsonOnlyFrameIdx = idx;
   clearInterval(jsonOnlyTimer);
   videoEl.style.display = "none";
 
   jsonOnlyTimer = setInterval(async () => {
     if (idx >= frameByTime.length) idx = 0;
+    jsonOnlyFrameIdx = idx;
     await renderFrameEntry(frameByTime[idx]);
     seekBar.value = String((idx / frameByTime.length) * 1000);
     timeLabel.textContent = `${idx + 1}/${frameByTime.length}`;
     idx += 1;
-  }, 1000 / fps);
+  }, 1000 / (fps * rate));
 }

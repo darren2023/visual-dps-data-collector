@@ -47,6 +47,7 @@ from pose_store import (
     REVIEW_STATUS_NO_COLLISION,
     ensure_no_collision_review_completed,
     event_review_status_label,
+    record_has_skeleton_data,
     resolve_event_review_status,
     save_event_review,
 )
@@ -547,7 +548,10 @@ def get_record_events(record_id: str) -> JSONResponse:
         raise HTTPException(404, "记录不存在")
     try:
         events = load_events(locator)
-        review = ensure_no_collision_review_completed(locator, event_count=len(events))
+        if not record_has_skeleton_data(locator):
+            review = ensure_no_collision_review_completed(locator, event_count=0)
+        else:
+            review = ensure_no_collision_review_completed(locator, event_count=len(events))
         events = enrich_events_with_review(events, locator)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc

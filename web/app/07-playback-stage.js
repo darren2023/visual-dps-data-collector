@@ -10,7 +10,23 @@ const eventJumpList = $("#event-jump-list");
 const eventFilterSelect = $("#event-filter");
 const eventCountLabel = $("#event-count-label");
 const eventsPanel = $("#playback-events-panel");
+const playbackSpeedSelect = $("#playback-speed");
 const stageWrap = document.querySelector(".stage-wrap");
+/** 当前播放倍速（1 = 原速） */
+let playbackSpeed = 1;
+
+function applyPlaybackSpeed() {
+  if (!videoEl) return;
+  const rate = Number.isFinite(playbackSpeed) && playbackSpeed > 0 ? playbackSpeed : 1;
+  videoEl.defaultPlaybackRate = rate;
+  videoEl.playbackRate = rate;
+}
+
+function readPlaybackSpeedFromSelect() {
+  const raw = parseFloat(playbackSpeedSelect?.value || "1");
+  playbackSpeed = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  applyPlaybackSpeed();
+}
 
 /** 舞台尺寸变化时重算 canvas 并强制重绘（避免退出全屏/窗口缩放后骨架卡住） */
 function bindStageLayoutWatch() {
