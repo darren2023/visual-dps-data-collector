@@ -110,6 +110,29 @@ python collect_pose.py --video test.mp4
 
 Web 采集页：无本地标注时会提示去「标注」页或上传 JSON，服务端拒绝无标注采集。
 
+### 文件夹递归批处理（仅骨架，不算碰撞）
+
+对齐 Web 采集页「仅计算骨架 + 文件夹批处理」，无需启动服务，递归处理根目录及全部子文件夹内的视频：
+
+```bash
+# 单机位：全部视频写入 localdata/json/{机位slug}/
+python scripts/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1
+
+# 保存配套视频到 localdata/video/{机位slug}/
+python scripts/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1 --save-video
+
+# 多机位：root 下第一级子目录名作机位（如 root/1-1-1/*.mp4、root/1-1-2/*.mp4）
+python scripts/batch_skeleton_collect.py D:/videos --group-by-subfolder
+
+# 预览待处理列表
+python scripts/batch_skeleton_collect.py D:/videos --camera-label 1-1-1 --dry-run
+
+# 已存在 manifest.json 的记录跳过
+python scripts/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1 --skip-existing
+```
+
+推理参数与 `collect_pose.py` 相同（`--backend`、`--frame-rate`、`--no-save-video` 等），读取 `config.json`。
+
 ## 碰撞检测（与 visual-dps event-worker 一致）
 
 - **输入**：visual-dps / box_human_det 同款标注 JSON（`shelves[]` 或 legacy 顶层 `boxes[]`，含 `video_polygon` / `video_polygon_norm`、`annotation_size`）
