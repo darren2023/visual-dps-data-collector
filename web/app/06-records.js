@@ -1,8 +1,39 @@
 /** 回放记录列表与打开记录 */
-const RECORDS_VISIBLE_PER_GROUP = 8;
-/** 机位分组展开条数上限（groupKey -> limit） */
-const recordGroupVisibleLimits = new Map();
+/** 当前查看的机位目录（null = 一级机位列表） */
+let playbackSelectedCameraSlug = null;
 let playbackRecordsCache = [];
+
+function recordGroupKey(s) {
+  return (
+    s.camera_slug ||
+    s.camera_label ||
+    (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
+    "未分类"
+  );
+}
+
+function buildRecordGroups(items) {
+  const groups = new Map();
+  for (const s of items) {
+    const key = recordGroupKey(s);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  return groups;
+}
+
+function cameraSlugForRecordId(recordId) {
+  if (!recordId) return null;
+  const item = playbackRecordsCache.find((s) => s.record_id === recordId);
+  if (item) return recordGroupKey(item);
+  if (String(recordId).includes("/")) return String(recordId).split("/")[0];
+  return null;
+}
+
+function focusPlaybackCameraForRecord(recordId) {
+  const slug = cameraSlugForRecordId(recordId);
+  if (slug) playbackSelectedCameraSlug = slug;
+}
 
 function recordItemEsc(v) {
   return String(v ?? "")
@@ -107,15 +138,46 @@ function renderRecordItem(s) {
       </li>`;
 }
 
+function renderCameraGroupItem(key, groupItems) {
+  const total = groupItems.length;
+  const title = groupItems[0]?.camera_label || key;
+  const groupReview = aggregateReviewStatus(groupItems);
+  const groupReviewPill = renderReviewPill(groupReview);
+  const esc = recordItemEsc;
+  return `
+    <li class="camera-group-item" data-camera-slug="${esc(key)}" role="button" tabindex="0">
+      <div class="camera-group-main">
+        <span class="camera-group-label">机位 ${esc(title)}</span>
+        <span class="camera-group-meta">
+          ${groupReviewPill}
+          <code>${esc(key)}</code> · ${total} 条
+        </span>
+      </div>
+      <span class="camera-group-chevron" aria-hidden="true">›</span>
+    </li>`;
+}
+
 function bindRecordListEvents(list) {
-  list.querySelectorAll(".record-show-more").forEach((btn) => {
+  list.querySelectorAll(".record-back-cameras").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.preventDefault();
-      e.stopPropagation();
-      const key = btn.dataset.groupKey;
-      const total = parseInt(btn.dataset.groupTotal || "0", 10);
-      if (key && total > 0) recordGroupVisibleLimits.set(key, total);
+      playbackSelectedCameraSlug = null;
       renderPlaybackRecordsList(playbackRecordsCache);
+    });
+  });
+  list.querySelectorAll(".camera-group-item").forEach((li) => {
+    const open = () => {
+      const slug = li.dataset.cameraSlug;
+      if (!slug) return;
+      playbackSelectedCameraSlug = slug;
+      renderPlaybackRecordsList(playbackRecordsCache);
+    };
+    li.addEventListener("click", open);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
     });
   });
   list.querySelectorAll(".record-item").forEach((li) => {
@@ -183,6 +245,7 @@ function renderPlaybackRecordsList(items) {
   if (!items.length) {
     list.innerHTML = "<p class='hint playback-records-empty'>暂无记录（请先在采集页完成采集）</p>";
     if (countEl) countEl.textContent = "";
+    playbackSelectedCameraSlug = null;
     selectedPlaybackRecord = null;
     updatePlaybackLoadButton();
     return;
@@ -190,62 +253,64 @@ function renderPlaybackRecordsList(items) {
   const filtered = filterQ
     ? items.filter((s) => recordSearchBlob(s).includes(filterQ))
     : items;
-  if (countEl) {
-    countEl.textContent = filterQ
-      ? `显示 ${filtered.length} / ${items.length} 条`
-      : `共 ${items.length} 条`;
+  const groups = buildRecordGroups(filtered);
+  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  if (playbackSelectedCameraSlug && !groups.has(playbackSelectedCameraSlug)) {
+    playbackSelectedCameraSlug = null;
   }
+  if (!playbackSelectedCameraSlug && keepId) {
+    const autoSlug = cameraSlugForRecordId(keepId);
+    if (autoSlug && groups.has(autoSlug)) playbackSelectedCameraSlug = autoSlug;
+  }
+
   if (!filtered.length) {
     list.innerHTML = "<p class='hint playback-records-empty'>无匹配记录</p>";
+    if (countEl) countEl.textContent = filterQ ? `0 / ${items.length} 条` : "";
     bindRecordListEvents(list);
     return;
   }
-  const groups = new Map();
-  for (const s of filtered) {
-    const key =
-      s.camera_slug ||
-      s.camera_label ||
-      (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
-      "未分类";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(s);
+
+  if (!playbackSelectedCameraSlug) {
+    if (countEl) {
+      countEl.textContent = filterQ
+        ? `${keys.length} 个机位 · 匹配 ${filtered.length} / ${items.length} 条`
+        : `${keys.length} 个机位 · 共 ${items.length} 条`;
+    }
+    list.innerHTML = `<ul class="camera-group-list">${keys
+      .map((key) => renderCameraGroupItem(key, groups.get(key)))
+      .join("")}</ul>`;
+    bindRecordListEvents(list);
+    return;
   }
-  const keepId = selectedPlaybackRecord?.recordId || currentRecordId || "";
-  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  list.innerHTML = keys
-    .map((key) => {
-      const groupItems = groups.get(key);
-      const total = groupItems.length;
-      const limit = recordGroupVisibleLimits.get(key) ?? Math.min(RECORDS_VISIBLE_PER_GROUP, total);
-      const visible = groupItems.slice(0, limit);
-      const hidden = total - visible.length;
-      const title = groupItems[0]?.camera_label || key;
-      const groupReview = aggregateReviewStatus(groupItems);
-      const groupReviewPill = renderReviewPill(groupReview);
-      const rows = visible.map(renderRecordItem).join("");
-      const openGroup =
-        keys.length === 1 ||
-        groupItems.some((s) => s.record_id === keepId) ||
-        key === (keepId.includes("/") ? keepId.split("/")[0] : "");
-      return `<details class="record-group" data-camera-slug="${recordItemEsc(key)}"${
-        openGroup ? " open" : ""
-      }>
-          <summary class="record-group-title">
-            <span class="record-group-label">机位 ${recordItemEsc(title)}</span>
-            <span class="record-group-meta">
-              ${groupReviewPill}
-              <code>${recordItemEsc(key)}</code> · ${total} 条
-            </span>
-          </summary>
-          <ul class="session-list">${rows}</ul>
-          ${
-            hidden > 0
-              ? `<button type="button" class="record-show-more link-btn" data-group-key="${recordItemEsc(key)}" data-group-total="${total}">展开其余 ${hidden} 条</button>`
-              : ""
-          }
-        </details>`;
-    })
-    .join("");
+
+  const groupItems = groups.get(playbackSelectedCameraSlug) || [];
+  const title = groupItems[0]?.camera_label || playbackSelectedCameraSlug;
+  const groupReview = aggregateReviewStatus(groupItems);
+  const groupReviewPill = renderReviewPill(groupReview);
+  const rows = groupItems.map(renderRecordItem).join("");
+  if (countEl) {
+    countEl.textContent = filterQ
+      ? `机位 ${title} · 匹配 ${groupItems.length} 条`
+      : `机位 ${title} · ${groupItems.length} 条`;
+  }
+  list.innerHTML = `
+    <div class="record-camera-nav">
+      <button type="button" class="record-back-cameras link-btn">← 返回机位列表</button>
+      <span class="record-camera-nav-title">
+        <span class="record-group-label">机位 ${recordItemEsc(title)}</span>
+        <span class="record-group-meta">
+          ${groupReviewPill}
+          <code>${recordItemEsc(playbackSelectedCameraSlug)}</code>
+        </span>
+      </span>
+    </div>
+    ${
+      rows
+        ? `<ul class="session-list">${rows}</ul>`
+        : "<p class='hint playback-records-empty'>该机位下无匹配记录</p>"
+    }`;
   bindRecordListEvents(list);
   if (keepId) highlightPlaybackRecordInList(keepId);
 }
@@ -340,6 +405,8 @@ async function openRecordReplay(recordId, displayName = "", jsonFileName = "", e
   await cleanupPlaybackVideo();
   clearVideoElement();
   currentRecordId = recordId;
+  focusPlaybackCameraForRecord(recordId);
+  renderPlaybackRecordsList(playbackRecordsCache);
   highlightPlaybackRecordInList(recordId);
   resetFrameFetchState();
   const manifestUrl = recordApiUrl(recordId, "/manifest.json");

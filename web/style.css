@@ -499,38 +499,6 @@ h2 {
   margin: 0.75rem;
 }
 
-.record-group {
-  margin: 0;
-  padding: 0;
-  border-left: 3px solid #3b82f6;
-  background: rgba(59, 130, 246, 0.06);
-  border-radius: 0;
-  border-bottom: 1px solid #1e293b;
-}
-
-.record-group:last-child {
-  border-bottom: none;
-}
-
-.record-group-title {
-  margin: 0;
-  padding: 0.45rem 0.65rem;
-  font-size: 0.88rem;
-  color: #93c5fd;
-  cursor: pointer;
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.35rem 0.75rem;
-  user-select: none;
-}
-
-.record-group-title::-webkit-details-marker {
-  color: #64748b;
-}
-
 .record-group-label {
   font-weight: 600;
 }
@@ -553,17 +521,99 @@ h2 {
   color: #7dd3fc;
 }
 
-.record-group .session-list {
+.camera-group-list {
+  list-style: none;
   margin: 0;
-  padding: 0 0.35rem;
+  padding: 0;
 }
 
-.record-show-more {
-  display: block;
-  width: 100%;
-  text-align: center;
-  padding: 0.35rem 0.5rem 0.55rem;
+.camera-group-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid #1e293b;
+  border-left: 3px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.06);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease;
+}
+
+.camera-group-item:last-child {
+  border-bottom: none;
+}
+
+.camera-group-item:hover,
+.camera-group-item:focus-visible {
+  background: rgba(59, 130, 246, 0.14);
+  outline: none;
+}
+
+.camera-group-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  min-width: 0;
+}
+
+.camera-group-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.camera-group-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.camera-group-meta code {
+  font-size: 0.76rem;
+  color: #7dd3fc;
+}
+
+.camera-group-chevron {
+  flex-shrink: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #64748b;
+}
+
+.record-camera-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid #1e293b;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.record-back-cameras {
+  flex-shrink: 0;
   font-size: 0.82rem;
+  padding: 0.2rem 0;
+}
+
+.record-camera-nav-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.65rem;
+  min-width: 0;
+  font-size: 0.88rem;
+  color: #93c5fd;
+}
+
+.playback-records-list .session-list {
+  margin: 0;
+  padding: 0 0.35rem;
 }
 
 .record-item-compact {
