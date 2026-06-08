@@ -671,13 +671,22 @@ def load_event_review(locator: RecordLocator) -> dict[str, Any]:
     }
 
 
+def persisted_event_review_status(review: dict[str, Any]) -> str:
+    """event_review.json 中已落盘的 status 字段（不含推断）。"""
+    return str(review.get("status") or "").strip().lower()
+
+
+def is_persisted_review_terminal(review: dict[str, Any]) -> bool:
+    return persisted_event_review_status(review) in REVIEW_STATUS_TERMINAL
+
+
 def resolve_event_review_status(
     review: dict[str, Any],
     *,
     event_count: int | None = None,
 ) -> str:
-    """未复核 / 复核中 / 已复核 / 无碰撞。"""
-    status = str(review.get("status") or "").strip().lower()
+    """未复核 / 复核中 / 已复核 / 无碰撞（展示用，含 event_total 推断）。"""
+    status = persisted_event_review_status(review)
     if status == REVIEW_STATUS_NO_COLLISION:
         return REVIEW_STATUS_NO_COLLISION
     if status == REVIEW_STATUS_COMPLETED:
@@ -705,16 +714,45 @@ def ensure_no_collision_review_completed(
         except (RuntimeError, OSError, ValueError):
             return load_event_review(locator)
     if event_count > 0:
-        return load_event_review(locator)
+        return cache_event_review_total(locator, event_count)
 
     review = load_event_review(locator)
-    current = resolve_event_review_status(review, event_count=0)
-    if current in REVIEW_STATUS_TERMINAL:
+    if is_persisted_review_terminal(review):
         return review
-    if current == REVIEW_STATUS_IN_PROGRESS and review.get("verified_true"):
+    if (
+        persisted_event_review_status(review) == REVIEW_STATUS_IN_PROGRESS
+        and review.get("verified_true")
+    ):
         return review
 
     save_event_review(locator, [], status=REVIEW_STATUS_NO_COLLISION, event_total=0)
+    return load_event_review(locator)
+
+
+def cache_event_review_total(locator: RecordLocator, event_total: int) -> dict[str, Any]:
+    """仅缓存事件总数（不改变复核状态），避免列表反复扫描 timeline。"""
+    review = load_event_review(locator)
+    total = max(0, int(event_total))
+    if review.get("event_total") == total:
+        return review
+
+    payload: dict[str, Any] = {
+        "schema": EVENT_REVIEW_SCHEMA,
+        "record_id": locator.record_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "verified_true": list(review.get("verified_true") or []),
+        "event_total": total,
+    }
+    st = str(review.get("status") or "").strip().lower()
+    if st:
+        payload["status"] = st
+    if review.get("completed_at"):
+        payload["completed_at"] = review.get("completed_at")
+
+    path = event_review_path(locator)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     return load_event_review(locator)
 
 

@@ -29,17 +29,16 @@ from config_loader import (
 )
 from model_assets import VIDEO_EXTENSIONS
 from pose_store import (
-    REVIEW_STATUS_NO_COLLISION,
-    REVIEW_STATUS_NOT_STARTED,
     STORAGE_V2_PARQUET,
     ensure_no_collision_review_completed,
     event_review_status_label,
+    is_persisted_review_terminal,
     iter_active_records,
     load_event_review,
-    load_event_review_raw,
     load_pose_header,
     locate_record as find_record,
     meta_sidecar_path,
+    persisted_event_review_status,
     resolve_event_review_status,
 )
 
@@ -360,6 +359,38 @@ def _has_annotation_fast(locator, video_stem: str, paths: AppPaths) -> bool:
     return ann_path.is_file()
 
 
+def _parse_event_total(review: dict[str, Any]) -> int | None:
+    raw = review.get("event_total")
+    if raw is None:
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def sync_event_review_for_list(locator) -> tuple[dict[str, Any], str]:
+    """列表/元数据：无碰撞记录写入 event_review.json，状态与已复核一样常驻磁盘。"""
+    review = load_event_review(locator)
+    cached_total = _parse_event_total(review)
+    if is_persisted_review_terminal(review):
+        status = persisted_event_review_status(review)
+        return review, status
+    if cached_total is not None and cached_total > 0:
+        status = resolve_event_review_status(review, event_count=cached_total)
+        return review, status
+    try:
+        review = ensure_no_collision_review_completed(
+            locator,
+            event_count=0 if cached_total == 0 else None,
+        )
+    except (RuntimeError, OSError, ValueError):
+        pass
+    cached_total = _parse_event_total(review)
+    status = resolve_event_review_status(review, event_count=cached_total)
+    return review, status
+
+
 def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str, Any]:
     """回放列表用轻量元数据（避免 reflection/标注全文/重复定位）。"""
     paths = paths or resolve_app_paths()
@@ -388,12 +419,7 @@ def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str,
         backend,
     )
 
-    review_raw = load_event_review_raw(locator)
-    review_status = resolve_event_review_status(review_raw)
-    if not collision_enabled and review_status == REVIEW_STATUS_NOT_STARTED:
-        review_status = REVIEW_STATUS_NO_COLLISION
-    elif review_raw.get("event_total") == 0 and not review_raw.get("verified_true"):
-        review_status = resolve_event_review_status(review_raw, event_count=0)
+    review, review_status = sync_event_review_for_list(locator)
 
     if locator.storage == STORAGE_V2_PARQUET:
         pose_file = f"{record_id}/manifest.json"
@@ -416,9 +442,10 @@ def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str,
         "collision_enabled": collision_enabled,
         "event_review_status": review_status,
         "event_review_label": event_review_status_label(review_status),
-        "event_review_verified_count": len(review_raw.get("verified_true") or [])
-        if isinstance(review_raw.get("verified_true"), list)
+        "event_review_verified_count": len(review.get("verified_true") or [])
+        if isinstance(review.get("verified_true"), list)
         else 0,
+        "event_review_total": _parse_event_total(review),
         "pose_file": pose_file,
         "pose_label": pose_label,
         "summary": True,
@@ -501,17 +528,13 @@ def record_meta_for_list(locator) -> dict[str, Any]:
     else:
         meta.pop("video_url", None)
 
-    try:
-        review = ensure_no_collision_review_completed(locator)
-    except (RuntimeError, OSError, ValueError):
-        review = load_event_review(locator)
-    event_count = int(review.get("event_total") or 0) if review.get("event_total") is not None else None
-    review_status = resolve_event_review_status(review, event_count=event_count)
+    review, review_status = sync_event_review_for_list(locator)
     meta["event_review_status"] = review_status
     meta["event_review_label"] = event_review_status_label(review_status)
     meta["event_review_verified_count"] = len(review.get("verified_true") or [])
-    if review.get("event_total") is not None:
-        meta["event_review_total"] = int(review.get("event_total") or 0)
+    event_total = _parse_event_total(review)
+    if event_total is not None:
+        meta["event_review_total"] = event_total
     return meta
 
 

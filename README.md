@@ -30,6 +30,8 @@ python server.py
 
 业务逻辑在 `collect_core` / `pose_store` / `annotation_store`；Web 层只做编排。
 
+前端主逻辑在 `web/app/`（由原 `app.js` 按采集 / 记录 / 事件复核 / 渲染等拆分，见 `web/app/README.md`）；`annotate.js` 为标注页。
+
 | 页签 | 功能 |
 |------|------|
 | **采集** | 上传视频 + **必填货框标注**（手动机位标识 / 上传 JSON / 标注页已存）→ 首帧预览对照填写机位 → 推理并**落盘碰撞事件** |
