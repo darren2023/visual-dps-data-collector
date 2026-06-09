@@ -14,5 +14,7 @@ onnxruntime-gpu>=1.20.0
 # 运行时由 ort_cuda_setup.py 预加载（Linux 进程内改 LD_LIBRARY_PATH 对 ORT 无效）
 nvidia-cudnn-cu12>=9.1.0
 nvidia-cublas-cu12>=12.1.0
+nvidia-curand-cu12>=10.3.0
+nvidia-cufft-cu12>=11.0.0
 nvidia-cuda-runtime-cu12>=12.1.0
 nvidia-cuda-nvrtc-cu12>=12.1.0

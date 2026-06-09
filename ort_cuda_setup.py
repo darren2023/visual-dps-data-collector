@@ -17,6 +17,8 @@ _ADDED_DIRS: list[str] = []
 _NVIDIA_SUBPACKAGES = (
     "cudnn",
     "cublas",
+    "curand",
+    "cufft",
     "cuda_nvrtc",
     "cuda_runtime",
 )
@@ -63,6 +65,8 @@ def _preload_linux_nvidia_libs(lib_dirs: list[str]) -> None:
         "libcudnn.so.9",
         "libcublas.so.12",
         "libcublasLt.so.12",
+        "libcurand.so.10",
+        "libcufft.so.11",
         "libcudart.so.12",
     )
     for lib_dir in lib_dirs:

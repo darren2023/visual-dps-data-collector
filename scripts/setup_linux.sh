@@ -80,7 +80,7 @@ if [ "$SKIP_CONDA" -eq 0 ] && [ "$USE_CPU" -eq 0 ]; then
 # visual-dps：为子进程设置 NVIDIA 库路径
 if [ -d "${CONDA_PREFIX}/lib" ]; then
   _VDC_NVIDIA_LIBS=""
-  for _sub in cudnn cublas cuda_nvrtc cuda_runtime; do
+  for _sub in cudnn cublas curand cufft cuda_nvrtc cuda_runtime; do
     for _pylib in "${CONDA_PREFIX}"/lib/python*/site-packages/nvidia/${_sub}/lib; do
       if [ -d "${_pylib}" ]; then
         _VDC_NVIDIA_LIBS="${_pylib}:${_VDC_NVIDIA_LIBS}"
