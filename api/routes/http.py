@@ -184,10 +184,21 @@ def lookup_reflection_camera(camera: str = "") -> dict[str, Any]:
 
 
 @router.get("/api/records")
-def list_records(summary: bool = True) -> list[dict[str, Any]]:
+def list_records(
+    summary: bool = True,
+    offset: int = 0,
+    limit: int = 0,
+) -> list[dict[str, Any]]:
+    """列出采集记录。默认返回全部；offset/limit 供前端分页拉取。"""
     paths = resolve_app_paths()
     paths.json_dir.mkdir(parents=True, exist_ok=True)
-    locators = iter_active_records(paths.json_dir)[:500]
+    locators = iter_active_records(paths.json_dir)
+    off = max(0, int(offset))
+    if off:
+        locators = locators[off:]
+    lim = int(limit)
+    if lim > 0:
+        locators = locators[:lim]
     if summary:
         items = [record_summary_for_list(loc, paths) for loc in locators]
     else:
