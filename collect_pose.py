@@ -41,7 +41,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  python collect_pose.py -v clip.mp4 --camera-label 1-1-1 --save-video\n"
+            '  python collect_pose.py -v "/path/to/video.mp4" --backend rtmpose_m --det-variant m \\\n'
+            '    --camera-label "1-1组-1" --save-video\n'
             "  python collect_pose.py -v clip.mp4 --backend rtmpose_t --det-variant m --save-video\n"
             "  python collect_pose.py -v clip.mp4 --skeleton-only --variant t\n"
         ),
@@ -145,6 +146,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="仅计算骨架，不算碰撞（无需标注）",
     )
     return p
+
+
+def _make_cli_progress_printer(interval_sec: float = 10.0):
+    """每 interval_sec 秒在终端刷新一次「处理帧数/总帧数」。"""
+    last_print_at = time.perf_counter()
+
+    def on_progress(current: int, frame_total: int) -> None:
+        nonlocal last_print_at
+        now = time.perf_counter()
+        finished = frame_total > 0 and current >= frame_total
+        if not finished and now - last_print_at < interval_sec:
+            return
+        last_print_at = now
+        total_label = str(frame_total) if frame_total > 0 else "?"
+        print(f"  ⏳ 处理帧数 {current}/{total_label}", end="\r", flush=True)
+
+    return on_progress
 
 
 def _resolve_storage_camera(
@@ -315,24 +333,29 @@ def main(argv: list[str] | None = None) -> int:
             skeleton_only=skeleton_only,
         )
 
+        print("⏳ 开始推理…")
         t0 = time.perf_counter()
-        data = run_collect_job(
-            video_path=video_path,
-            output_path=output_path,
-            models_dir=settings.models_dir,
-            variant=_parse_variant(settings.variant),
-            det_variant=settings.det_variant,
-            device=settings.device,
-            ort_backend=settings.ort_backend,
-            width=settings.infer_width,
-            height=settings.infer_height,
-            frame_interval=settings.pose_frame_interval,
-            frame_rate=settings.frame_rate,
-            max_frames=settings.max_pose_frames,
-            annotation_path=str(inference_ann) if inference_ann else None,
-            alarm_min_consecutive_frames=settings.alarm_min_consecutive_frames,
-            alarm_cooldown_frames=settings.alarm_cooldown_frames,
-        )
+        try:
+            data = run_collect_job(
+                video_path=video_path,
+                output_path=output_path,
+                models_dir=settings.models_dir,
+                variant=_parse_variant(settings.variant),
+                det_variant=settings.det_variant,
+                device=settings.device,
+                ort_backend=settings.ort_backend,
+                width=settings.infer_width,
+                height=settings.infer_height,
+                frame_interval=settings.pose_frame_interval,
+                frame_rate=settings.frame_rate,
+                max_frames=settings.max_pose_frames,
+                annotation_path=str(inference_ann) if inference_ann else None,
+                alarm_min_consecutive_frames=settings.alarm_min_consecutive_frames,
+                alarm_cooldown_frames=settings.alarm_cooldown_frames,
+                on_progress=_make_cli_progress_printer(10.0),
+            )
+        finally:
+            print()
 
         pose_path = Path(output_path)
         record_id = record_id_from_pose_path(pose_path)
