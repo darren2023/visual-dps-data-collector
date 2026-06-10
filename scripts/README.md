@@ -25,10 +25,18 @@ python scripts/setup/download_onnx_models.py --det t,m --pose t
 |------|------|
 | `collect/batch_skeleton_collect.py` | 单机位 / 多机位文件夹递归批处理（骨架 + 可选碰撞） |
 | `collect/batch_video_workspace.py` | 工作区下多个批次根目录依次调用批处理 |
+| `collect/batch_staging_parallel.py` | **并行** staging 采集（默认 2 路 + 新终端窗口） |
+| `data/merge_staging_batches.py` | 将 `localdata_staging/{批次}/` 合并入主 `localdata/` |
 
 ```bash
 python scripts/collect/batch_skeleton_collect.py /path/videos --group-by-subfolder --with-collision
 python scripts/collect/batch_video_workspace.py /path/workspace --variant t --skip-existing
+
+# 并行 staging（默认工作区 /home/hqit/zyrao/skeleton-video/）
+python scripts/collect/batch_staging_parallel.py --plan-only
+python scripts/collect/batch_staging_parallel.py --terminal --with-collision --skip-existing
+python scripts/collect/batch_staging_parallel.py --terminal --with-collision --merge-after --consolidate-after
+python scripts/data/merge_staging_batches.py --consolidate-after
 ```
 
 ## data/ — 数据迁移与维护
