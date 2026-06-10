@@ -44,11 +44,17 @@ from api.record_service import (
 )
 from api.reflection_service import (
     REFLECTION_OK,
+    load_reflection_or_error,
     load_reflection_or_http,
     normalize_corner_label,
     resolve_annotation_for_camera,
 )
 from event_engine.annotation_boxes import load_annotation_config
+
+try:
+    from corner_label.resolve import ResolveResult
+except ImportError:
+    ResolveResult = None  # type: ignore[misc, assignment]
 
 def build_collect_config_snapshot(
     *,
@@ -314,6 +320,94 @@ def run_job(
             shutil.rmtree(parent, ignore_errors=True)
 
 
+def _persistent_source_annotation(paths, resolved: ResolveResult) -> Path | None:
+    """annotations 目录下的持久源标注（非临时合并文件）。"""
+    ann_dir = paths.annotation_dir.resolve()
+    for path in resolved.source_annotation_paths:
+        try:
+            if path.resolve().parent == ann_dir and path.is_file():
+                return path
+        except OSError:
+            continue
+    for path in resolved.source_annotation_paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def attach_reflection_annotation_to_record(
+    paths,
+    resolved: ResolveResult,
+    *,
+    pose_path: Path,
+) -> Path | None:
+    """机位 reflection 标注：写入记录包 annotation.json，不新建 clip_*.json。"""
+    src = _persistent_source_annotation(paths, resolved)
+    if not src:
+        return None
+    if pose_path.is_dir():
+        try:
+            shutil.copy2(src, pose_path / "annotation.json")
+        except OSError:
+            pass
+    return src
+
+
+def resolve_annotation_for_collect_cli(
+    paths,
+    *,
+    video_stem: str,
+    camera_label: str = "",
+    upload_ann_path: Path | None = None,
+    work_dir: Path | None = None,
+) -> tuple[Path, str | None, str | None, str, ResolveResult | None]:
+    """
+    解析采集标注（CLI / 脚本）。
+    返回 (inference_path, camera_label, camera_slug, annotation_source, resolve_result)。
+    annotation_source: upload | reflection | stored
+    """
+    if upload_ann_path and upload_ann_path.is_file():
+        _, err = validate_annotation_payload(load_annotation_config(upload_ann_path))
+        if err:
+            raise ValueError(err)
+        return upload_ann_path, None, None, "upload", None
+
+    cam = normalize_corner_label(camera_label) if normalize_corner_label else str(camera_label or "").strip()
+    if cam:
+        if not REFLECTION_OK or not resolve_annotation_for_camera:
+            raise ValueError("机位标注需要 reflection 模块（corner_label）")
+        reflection = load_reflection_or_error()
+        resolved = resolve_annotation_for_camera(
+            cam,
+            reflection=reflection,
+            annotations_dir=paths.annotation_dir,
+        )
+        _, err = validate_annotation_payload(load_annotation_config(resolved.annotation_path))
+        if err:
+            raise ValueError(err)
+        inference_path = resolved.annotation_path
+        if len(resolved.source_annotation_paths) > 1:
+            if work_dir is None:
+                raise ValueError("多标注合并需要 work_dir")
+            work_dir.mkdir(parents=True, exist_ok=True)
+            dest = work_dir / "annotation_merged.json"
+            shutil.copy2(resolved.annotation_path, dest)
+            if resolved.annotation_path.name.startswith("tmp"):
+                resolved.annotation_path.unlink(missing_ok=True)
+            inference_path = dest
+        else:
+            inference_path = resolved.source_annotation_paths[0]
+        cam_slug = camera_storage_slug(resolved.camera_label)
+        return inference_path, resolved.camera_label, cam_slug, "reflection", resolved
+
+    annotation_path = require_annotation_for_collect(
+        video_stem,
+        annotation_dir=paths.annotation_dir,
+        upload_path=None,
+    )
+    return annotation_path, None, None, "stored", None
+
+
 def resolve_collect_annotation(
     tmp_dir: Path,
     paths,
@@ -323,47 +417,13 @@ def resolve_collect_annotation(
     upload_ann_path: Path | None,
 ) -> tuple[Path | None, str | None, str | None]:
     """返回 (annotation_path, camera_label, camera_slug)。"""
-    annotation_path: Path | None = None
-    cam_label: str | None = None
-    cam_slug: str | None = None
-
-    if upload_ann_path and upload_ann_path.is_file():
-        annotation_path = upload_ann_path
-        _, err = validate_annotation_payload(load_annotation_config(annotation_path))
-        if err:
-            raise HTTPException(400, err)
-        return annotation_path, cam_label, cam_slug
-
-    cam = normalize_corner_label(camera_label) if normalize_corner_label else str(camera_label or "").strip()
-    if cam and REFLECTION_OK and resolve_annotation_for_camera:
-        from corner_label.resolve import resolve_annotation_for_camera as resolve_cam
-
-        reflection = load_reflection_or_http()
-        resolved = resolve_cam(
-            cam,
-            reflection=reflection,
-            annotations_dir=paths.annotation_dir,
-        )
-        _, err = validate_annotation_payload(load_annotation_config(resolved.annotation_path))
-        if err:
-            raise HTTPException(400, err)
-        if len(resolved.source_annotation_paths) > 1:
-            dest = tmp_dir / "annotation_merged.json"
-            shutil.copy2(resolved.annotation_path, dest)
-            if resolved.annotation_path.name.startswith("tmp"):
-                resolved.annotation_path.unlink(missing_ok=True)
-            annotation_path = dest
-        else:
-            annotation_path = resolved.source_annotation_paths[0]
-        cam_label = resolved.camera_label
-        cam_slug = camera_storage_slug(cam_label)
-        return annotation_path, cam_label, cam_slug
-
     try:
-        annotation_path = require_annotation_for_collect(
-            video_stem,
-            annotation_dir=paths.annotation_dir,
-            upload_path=None,
+        annotation_path, cam_label, cam_slug, _, _ = resolve_annotation_for_collect_cli(
+            paths,
+            video_stem=video_stem,
+            camera_label=camera_label,
+            upload_ann_path=upload_ann_path,
+            work_dir=tmp_dir,
         )
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -29,13 +29,22 @@ def reflection_json_path() -> Path:
     return (project_root() / rel).resolve()
 
 
-def load_reflection_or_http() -> Any:
+def load_reflection_or_error() -> Any:
+    """加载 reflection.json；CLI 用，抛 ValueError / FileNotFoundError。"""
     if not REFLECTION_OK or not load_reflection:
-        raise HTTPException(500, "reflection 模块未就绪")
+        raise ValueError("reflection 模块未就绪")
     reflection_path = reflection_json_path()
     if not reflection_path.is_file():
-        raise HTTPException(
-            500,
-            f"缺少 reflection.json: {reflection_path}（可复制 examples/reflection.example.json）",
+        raise FileNotFoundError(
+            f"缺少 reflection.json: {reflection_path}（可复制 examples/reflection.example.json）"
         )
     return load_reflection(reflection_path)
+
+
+def load_reflection_or_http() -> Any:
+    try:
+        return load_reflection_or_error()
+    except ValueError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc)) from exc

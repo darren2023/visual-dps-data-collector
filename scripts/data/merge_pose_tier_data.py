@@ -9,10 +9,10 @@
   - 人工事件复核 event_review.json（可合并 verified_true）
 
 用法:
-  # 预览（不写入）
+  # 预览（不写入）；结束时输出「本地文件 / 导入文件」冲突对照表
   python scripts/data/merge_pose_tier_data.py --source /path/to/other-machine/export --dry-run
 
-  # 正式合并：冲突记录跳过，复核结果并集合并
+  # 正式合并：冲突记录跳过（保留本地包/视频），导入侧人工复核 event_review 仍并集合并
   python scripts/data/merge_pose_tier_data.py --source /path/to/export --tier rtmpose-t
 
   # 源机位目录与目标冲突时，用源覆盖
@@ -73,6 +73,8 @@ class MergeStats:
     batch_manifest_copy: int = 0
     camera_dirs: int = 0
     conflicts: list[str] = field(default_factory=list)
+    # (本地路径, 导入路径)
+    conflict_pairs: list[tuple[str, str]] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,6 +92,7 @@ class MergeStats:
             "batch_manifest_copy": self.batch_manifest_copy,
             "camera_dirs": self.camera_dirs,
             "conflicts": list(self.conflicts),
+            "conflict_pairs": [{"local": a, "import": b} for a, b in self.conflict_pairs],
         }
 
 
@@ -98,6 +101,36 @@ def _log(stats: MergeStats, msg: str, *, dry_run: bool) -> None:
     line = f"{prefix}{msg}"
     print(line)
     stats.actions.append(line)
+
+
+def _add_conflict(
+    stats: MergeStats,
+    local: Path,
+    imported: Path,
+    *,
+    record_id: str | None = None,
+) -> None:
+    local_s = str(local.resolve())
+    import_s = str(imported.resolve())
+    pair = (local_s, import_s)
+    if pair in stats.conflict_pairs:
+        return
+    stats.conflict_pairs.append(pair)
+    if record_id:
+        stats.conflicts.append(record_id)
+
+
+def print_conflict_table(pairs: list[tuple[str, str]]) -> None:
+    if not pairs:
+        return
+    col_local, col_import = "本地文件", "导入文件"
+    w1 = max(len(col_local), *(len(p[0]) for p in pairs))
+    w2 = max(len(col_import), *(len(p[1]) for p in pairs))
+    gap = "     "
+    print(f"\n冲突文件（共 {len(pairs)} 条）")
+    print(f"{col_local:<{w1}}{gap}{col_import}")
+    for local, imported in pairs:
+        print(f"{local:<{w1}}{gap}{imported}")
 
 
 def _file_newer(src: Path, dest: Path) -> bool:
@@ -330,6 +363,68 @@ def _merge_event_review(
     return payload
 
 
+def _review_has_import_data(review: dict[str, Any] | None) -> bool:
+    """导入侧 event_review 是否含有效人工复核。"""
+    if not review:
+        return False
+    verified = review.get("verified_true") or []
+    if isinstance(verified, list) and verified:
+        return True
+    st = str(review.get("status") or "").strip().lower()
+    if st in (REVIEW_STATUS_COMPLETED, REVIEW_STATUS_IN_PROGRESS, REVIEW_STATUS_NO_COLLISION):
+        return True
+    return bool(str(review.get("updated_at") or "").strip() or str(review.get("completed_at") or "").strip())
+
+
+def _review_merge_changed(dest_rev: dict[str, Any], merged: dict[str, Any]) -> bool:
+    return (
+        merged.get("verified_true") != dest_rev.get("verified_true")
+        or merged.get("status") != dest_rev.get("status")
+        or merged.get("event_total") != dest_rev.get("event_total")
+    )
+
+
+def _maybe_merge_review_on_record_skip(
+    *,
+    dest_pkg: Path,
+    src_pkg: Path,
+    dest_rel: str,
+    review_mode: str,
+    stats: MergeStats,
+    dry_run: bool,
+) -> None:
+    """记录包冲突且保留本地时，将导入侧人工复核并入本地 event_review.json。"""
+    if review_mode == "skip":
+        return
+    src_rev = _load_json(src_pkg / EVENT_REVIEW_FILE)
+    if not _review_has_import_data(src_rev):
+        return
+    dest_rev = _load_json(dest_pkg / EVENT_REVIEW_FILE) or {}
+    if review_mode == "overwrite":
+        merged = dict(src_rev)
+        merged["record_id"] = dest_rel
+    else:
+        merged = _merge_event_review(src_rev, dest_rev, record_id=dest_rel)
+    if not _review_merge_changed(dest_rev, merged):
+        return
+    stats.records_review_merge += 1
+    n_dest = len(dest_rev.get("verified_true") or [])
+    n_src = len(src_rev.get("verified_true") or [])
+    n_out = len(merged.get("verified_true") or [])
+    if dest_rev:
+        msg = (
+            f"合并复核（保留本地记录）: {dest_rel}（verified {n_dest} + {n_src} → {n_out}，"
+            f"status={merged.get('status') or '-'}）"
+        )
+    else:
+        msg = (
+            f"写入导入复核（保留本地记录）: {dest_rel}（verified {n_src}，"
+            f"status={merged.get('status') or '-'}）"
+        )
+    _log(stats, msg, dry_run=dry_run)
+    _write_json(dest_pkg / EVENT_REVIEW_FILE, merged, dry_run=dry_run)
+
+
 def _copy_file(src: Path, dest: Path, *, dry_run: bool) -> None:
     if dry_run:
         return
@@ -373,10 +468,12 @@ def merge_annotations(
         if dest_file.is_file():
             if policy == "skip":
                 stats.annotations_skip += 1
+                _add_conflict(stats, dest_file, src_file)
                 _log(stats, f"跳过标注（已存在）: annotations/{name}", dry_run=dry_run)
                 continue
             if policy == "newer" and not _file_newer(src_file, dest_file):
                 stats.annotations_skip += 1
+                _add_conflict(stats, dest_file, src_file)
                 _log(stats, f"跳过标注（目标较新）: annotations/{name}", dry_run=dry_run)
                 continue
             if policy == "allocate":
@@ -437,23 +534,29 @@ def merge_records(
         if pkg_exists:
             if on_conflict == "skip":
                 stats.records_skip += 1
-                stats.conflicts.append(dest_rel)
-                _log(stats, f"跳过记录（已存在）: {dest_rel}", dry_run=dry_run)
-                # 仍尝试合并复核
-                if review_mode == "merge":
-                    src_rev = _load_json(src_pkg / EVENT_REVIEW_FILE)
-                    dest_rev = _load_json(dest_pkg / EVENT_REVIEW_FILE)
-                    if src_rev and dest_rev:
-                        merged = _merge_event_review(src_rev, dest_rev, record_id=dest_rel)
-                        if merged.get("verified_true") != dest_rev.get("verified_true") or merged.get("status") != dest_rev.get("status"):
-                            stats.records_review_merge += 1
-                            _log(stats, f"合并复核: {dest_rel}（verified {len(dest_rev.get('verified_true') or [])} + {len(src_rev.get('verified_true') or [])} → {len(merged.get('verified_true') or [])}）", dry_run=dry_run)
-                            _write_json(dest_pkg / EVENT_REVIEW_FILE, merged, dry_run=dry_run)
+                _add_conflict(stats, dest_pkg, src_pkg, record_id=dest_rel)
+                _log(stats, f"跳过记录（已存在，保留本地）: {dest_rel}", dry_run=dry_run)
+                _maybe_merge_review_on_record_skip(
+                    dest_pkg=dest_pkg,
+                    src_pkg=src_pkg,
+                    dest_rel=dest_rel,
+                    review_mode=review_mode,
+                    stats=stats,
+                    dry_run=dry_run,
+                )
                 continue
             if not _should_take_src(on_conflict, src_pkg / MANIFEST_FILE, dest_pkg / MANIFEST_FILE):
                 stats.records_skip += 1
-                stats.conflicts.append(dest_rel)
-                _log(stats, f"跳过记录（冲突策略）: {dest_rel}", dry_run=dry_run)
+                _add_conflict(stats, dest_pkg, src_pkg, record_id=dest_rel)
+                _log(stats, f"跳过记录（冲突策略，保留本地）: {dest_rel}", dry_run=dry_run)
+                _maybe_merge_review_on_record_skip(
+                    dest_pkg=dest_pkg,
+                    src_pkg=src_pkg,
+                    dest_rel=dest_rel,
+                    review_mode=review_mode,
+                    stats=stats,
+                    dry_run=dry_run,
+                )
                 continue
             stats.records_overwrite += 1
             _log(stats, f"覆盖记录: {dest_rel}", dry_run=dry_run)
@@ -496,9 +599,11 @@ def merge_records(
                 if dest_vid.is_file():
                     if on_conflict == "skip":
                         stats.video_skip += 1
+                        _add_conflict(stats, dest_vid, src_vid)
                         continue
                     if on_conflict == "newer" and not _file_newer(src_vid, dest_vid):
                         stats.video_skip += 1
+                        _add_conflict(stats, dest_vid, src_vid)
                         continue
                 _log(stats, f"视频: {tier}/{camera_slug}/{src_vid.name}", dry_run=dry_run)
                 _copy_file(src_vid, dest_vid, dry_run=dry_run)
@@ -521,6 +626,7 @@ def merge_records(
         for batch_file in cam_dir.glob("_batch_*.json"):
             dest_bf = dest_cam / batch_file.name
             if dest_bf.is_file() and on_conflict == "skip":
+                _add_conflict(stats, dest_bf, batch_file)
                 continue
             _log(stats, f"批处理清单: {tier}/{cam_name}/{batch_file.name}", dry_run=dry_run)
             _copy_file(batch_file, dest_bf, dry_run=dry_run)
@@ -625,7 +731,7 @@ def main(argv: list[str] | None = None) -> int:
         "--review-mode",
         choices=("merge", "skip", "overwrite"),
         default="merge",
-        help="记录已存在时 event_review 处理：merge=并集合并 verified_true（默认）",
+        help="记录冲突保留本地时 event_review：merge=并集合并导入复核（默认）；overwrite=用导入覆盖",
     )
     p.add_argument(
         "--annotation-policy",
@@ -661,8 +767,12 @@ def main(argv: list[str] | None = None) -> int:
         f"视频 {stats.video_copy}，标注新增 {stats.annotations_copy} / 跳过 {stats.annotations_skip} / "
         f"另存 {stats.annotations_allocate}，机位 {stats.camera_dirs}"
     )
-    if stats.conflicts and args.on_conflict == "skip":
-        print(f"冲突记录 {len(stats.conflicts)} 条（已跳过，可用 --on-conflict newer|overwrite 处理）")
+    if stats.conflict_pairs:
+        if args.dry_run:
+            print_conflict_table(stats.conflict_pairs)
+        elif args.on_conflict == "skip":
+            print(f"冲突 {len(stats.conflict_pairs)} 条（已跳过，可用 --on-conflict newer|overwrite 处理）")
+            print("使用 --dry-run 可查看「本地文件 / 导入文件」对照表")
     return 0
 
 

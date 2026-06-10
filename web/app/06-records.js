@@ -19,12 +19,9 @@ function cameraSlugFromRecordId(recordId) {
 }
 
 function recordGroupKey(s) {
-  return (
-    s.camera_slug ||
-    s.camera_label ||
-    cameraSlugFromRecordId(s.record_id) ||
-    "未分类"
-  );
+  const slug = s.camera_slug || cameraSlugFromRecordId(s.record_id);
+  if (slug === "_ungrouped") return s.camera_label || "未分组";
+  return slug || s.camera_label || "未分类";
 }
 
 function buildRecordGroups(items) {

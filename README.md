@@ -160,17 +160,18 @@ python collect_pose.py --video test.mp4 --models-dir ../visual-dps/localdata/mod
 ## 命令行
 
 ```bash
-python collect_pose.py --video test.mp4 --backend rtmpose_t
+python collect_pose.py --video test.mp4 --backend rtmpose_t --det-variant m
 ```
 
-未指定 `-o` 时写入 `paths.json_dir/{视频主名}_{backend}.json`（如 `test.mp4` → `test_rtmpose_t.json`）。
+未指定 `-o` 时写入 `localdata/json/rtmpose-t/_ungrouped/{视频主名}_{backend}/`（未分组机位）；指定 `--camera-label` 时写入对应机位子目录。
 
-采集须带有效货框标注（上传 JSON 或 `localdata/json/annotations/{视频主名}.json`）：
+采集须带有效货框标注（上传 JSON、`--camera-label` 机位 reflection，或 `localdata/json/annotations/{视频主名}.json`）；`--skeleton-only` 可跳过标注：
 
 ```bash
 python collect_pose.py --video test.mp4 --annotation path/to/boxes.json
-# 或先在 Web「标注」页保存后：
-python collect_pose.py --video test.mp4
+python collect_pose.py --video test.mp4 --backend rtmpose_t --det-variant m --save-video
+python collect_pose.py --video /path/to/clip.mp4 --camera-label 1-2组-1 --save-video
+python collect_pose.py --video /path/to/clip.mp4 --skeleton-only --variant t --save-video
 ```
 
 Web 采集页：无本地标注时会提示去「标注」页或上传 JSON，服务端拒绝无标注采集。

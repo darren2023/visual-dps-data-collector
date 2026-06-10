@@ -38,6 +38,11 @@ def project_root() -> Path:
     return _PROJECT_ROOT
 
 
+# 单视频 CLI 采集：未指定机位时的存储目录（json/video 下 rtmpose-t/_ungrouped/）
+UNGROUPED_CAMERA_SLUG = "_ungrouped"
+UNGROUPED_CAMERA_LABEL = "未分组"
+
+
 def resolve_config_path(path: str | None) -> Path:
     if path and str(path).strip():
         p = Path(path.strip())
