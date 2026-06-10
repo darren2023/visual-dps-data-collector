@@ -2,9 +2,9 @@
 """将扁平机位目录迁移到 rtmpose-t/ 模型层下，并更新 record_id 引用。
 
 用法:
-  python scripts/migrate_pose_model_tiers.py --dry-run
-  python scripts/migrate_pose_model_tiers.py
-  python scripts/migrate_pose_model_tiers.py --tier rtmpose-t
+  python scripts/data/migrate_pose_model_tiers.py --dry-run
+  python scripts/data/migrate_pose_model_tiers.py
+  python scripts/data/migrate_pose_model_tiers.py --tier rtmpose-t
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -9,7 +9,7 @@
 #   pip install "rtmlib>=0.0.13" --no-deps
 #
 # 一键部署（推荐）：
-#   Linux:   bash scripts/setup_linux.sh
-#   Windows: powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1
+#   Linux:   bash scripts/setup/setup_linux.sh
+#   Windows: powershell -ExecutionPolicy Bypass -File scripts/setup/setup_windows.ps1
 #
 # 开发/测试见 requirements-dev.txt

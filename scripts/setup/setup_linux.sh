@@ -2,14 +2,14 @@
 # Linux GPU 环境一键部署：conda 环境、依赖、ONNX 模型、GPU 验证
 #
 # 用法：
-#   bash scripts/setup_linux.sh                  # 新建/更新 conda 环境 visual-dps
-#   bash scripts/setup_linux.sh --env myenv      # 指定环境名
-#   bash scripts/setup_linux.sh --skip-conda     # 已在目标 Python 环境中，仅装依赖
-#   bash scripts/setup_linux.sh --skip-models    # 跳过模型下载
-#   bash scripts/setup_linux.sh --cpu            # 安装 CPU 版依赖
+#   bash scripts/setup/setup_linux.sh                  # 新建/更新 conda 环境 visual-dps
+#   bash scripts/setup/setup_linux.sh --env myenv      # 指定环境名
+#   bash scripts/setup/setup_linux.sh --skip-conda     # 已在目标 Python 环境中，仅装依赖
+#   bash scripts/setup/setup_linux.sh --skip-models    # 跳过模型下载
+#   bash scripts/setup/setup_linux.sh --cpu            # 安装 CPU 版依赖
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 ENV_NAME="visual-dps"
@@ -105,12 +105,12 @@ fi
 
 if [ "$SKIP_MODELS" -eq 0 ]; then
   echo ">> 下载 ONNX 模型（det t,m + pose t）"
-  python scripts/download_onnx_models.py --det t,m --pose t
+  python scripts/setup/download_onnx_models.py --det t,m --pose t
 fi
 
 if [ "$USE_CPU" -eq 0 ]; then
   echo ">> 验证 GPU"
-  python scripts/verify_gpu.py
+  python scripts/setup/verify_gpu.py
 else
   echo ">> CPU 模式，跳过 GPU 验证"
 fi

@@ -22,7 +22,7 @@
 重新拆分（修改 monolith 后）：
 
 ```bash
-python scripts/split_app_js.py
+python scripts/archive/split_app_js.py
 ```
 
 注意：脚本会读取 `web/app.js`；若已拆分，请先将 `app.monolith.js` 复制为 `app.js` 再运行。

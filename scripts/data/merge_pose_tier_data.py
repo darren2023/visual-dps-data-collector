@@ -10,16 +10,16 @@
 
 用法:
   # 预览（不写入）
-  python scripts/merge_pose_tier_data.py --source /path/to/other-machine/export --dry-run
+  python scripts/data/merge_pose_tier_data.py --source /path/to/other-machine/export --dry-run
 
   # 正式合并：冲突记录跳过，复核结果并集合并
-  python scripts/merge_pose_tier_data.py --source /path/to/export --tier rtmpose-t
+  python scripts/data/merge_pose_tier_data.py --source /path/to/export --tier rtmpose-t
 
   # 源机位目录与目标冲突时，用源覆盖
-  python scripts/merge_pose_tier_data.py --source /path/to/export --on-conflict overwrite
+  python scripts/data/merge_pose_tier_data.py --source /path/to/export --on-conflict overwrite
 
   # 仅合并采集记录，不合并 annotations/
-  python scripts/merge_pose_tier_data.py --source /path/to/export --no-merge-annotations
+  python scripts/data/merge_pose_tier_data.py --source /path/to/export --no-merge-annotations
 
 源目录可以是：
   - 另一台机器的项目根（含 localdata/json、localdata/video）
@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

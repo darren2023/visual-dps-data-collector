@@ -38,7 +38,7 @@ def assert_cuda_ort_available() -> None:
         raise RuntimeError(
             "已请求 GPU 推理，但未找到 nvidia-cudnn-cu12。"
             " 请执行: pip install -r requirements-windows-gpu.txt"
-            " 或 powershell -File scripts/setup_windows.ps1"
+            " 或 powershell -File scripts/setup/setup_windows.ps1"
         )
     prepare_ort_cuda_dll_path()
     providers = ort_available_providers()
@@ -65,7 +65,7 @@ def assert_cuda_ort_available() -> None:
             else:
                 hint = (
                     "常见原因: 缺 libcudnn.so.9，请 pip install -r requirements-linux-gpu.txt"
-                    " 或 bash scripts/setup_linux.sh"
+                    " 或 bash scripts/setup/setup_linux.sh"
                 )
             raise RuntimeError(
                 f"CUDAExecutionProvider 不可用。{hint}"

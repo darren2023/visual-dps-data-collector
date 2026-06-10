@@ -16,18 +16,18 @@
 
 用法:
   # 预览全部批次（不推理）
-  python scripts/batch_video_workspace.py /home/zyqiao/video --dry-run
+  python scripts/collect/batch_video_workspace.py /home/zyqiao/video --dry-run
 
   # RTMPose-T + 碰撞，跳过已有记录
-  python scripts/batch_video_workspace.py /home/zyqiao/video \\
+  python scripts/collect/batch_video_workspace.py /home/zyqiao/video \\
     --variant t --with-collision --skip-existing
 
   # 只处理指定批次
-  python scripts/batch_video_workspace.py /home/zyqiao/video \\
+  python scripts/collect/batch_video_workspace.py /home/zyqiao/video \\
     --only 6.1,video3 --variant s --with-collision --dry-run
 
   # 每批次试跑 2 个视频
-  python scripts/batch_video_workspace.py /home/zyqiao/video --limit 2 --variant t
+  python scripts/collect/batch_video_workspace.py /home/zyqiao/video --limit 2 --variant t
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-BATCH_SCRIPT = ROOT / "scripts" / "batch_skeleton_collect.py"
+ROOT = Path(__file__).resolve().parents[2]
+BATCH_SCRIPT = Path(__file__).resolve().parent / "batch_skeleton_collect.py"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

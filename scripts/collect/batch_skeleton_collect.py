@@ -3,14 +3,14 @@
 
 用法:
   # 仅骨架（不算碰撞）
-  python scripts/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1
-  python scripts/batch_skeleton_collect.py D:/videos --group-by-subfolder --dry-run
+  python scripts/collect/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1
+  python scripts/collect/batch_skeleton_collect.py D:/videos --group-by-subfolder --dry-run
 
   # 骨架 + 碰撞（需 reflection.json 与 annotations/{编号}.json）
-  python scripts/batch_skeleton_collect.py D:/videos --group-by-subfolder --with-collision
-  python scripts/batch_skeleton_collect.py D:/videos/1-2组-1 --camera-label 1-2组-1 --with-collision --save-video
+  python scripts/collect/batch_skeleton_collect.py D:/videos --group-by-subfolder --with-collision
+  python scripts/collect/batch_skeleton_collect.py D:/videos/1-2组-1 --camera-label 1-2组-1 --with-collision --save-video
 
-  python scripts/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1 --skip-existing
+  python scripts/collect/batch_skeleton_collect.py D:/videos/1-1-1 --camera-label 1-1-1 --skip-existing
 
 说明:
   - 递归包含所有子文件夹中的视频
@@ -35,7 +35,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -4,10 +4,10 @@
 无需打开回放页，直接扫描 localdata/json 下全部活跃记录并落盘复核状态。
 
 用法:
-  python scripts/backfill_no_collision_review.py
-  python scripts/backfill_no_collision_review.py --dry-run
-  python scripts/backfill_no_collision_review.py 2-1-3
-  python scripts/backfill_no_collision_review.py --dry-run 2-1-3
+  python scripts/data/backfill_no_collision_review.py
+  python scripts/data/backfill_no_collision_review.py --dry-run
+  python scripts/data/backfill_no_collision_review.py 2-1-3
+  python scripts/data/backfill_no_collision_review.py --dry-run 2-1-3
 
 说明:
   - 仅当 timeline 中无碰撞/告警事件时写入「无碰撞」
@@ -23,7 +23,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

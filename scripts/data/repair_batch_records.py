@@ -2,8 +2,8 @@
 """为已有机位目录下的采集记录补标注副本（无需重新推理）。
 
 用法:
-  python scripts/repair_batch_records.py              # 修复全部记录
-  python scripts/repair_batch_records.py 2-1-3        # 仅修复机位目录 2-1-3 下记录
+  python scripts/data/repair_batch_records.py              # 修复全部记录
+  python scripts/data/repair_batch_records.py 2-1-3        # 仅修复机位目录 2-1-3 下记录
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
