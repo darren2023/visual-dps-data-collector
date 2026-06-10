@@ -13,4 +13,6 @@ from api.app import app, main  # noqa: E402
 __all__ = ["app", "main"]
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import sys
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -29,13 +32,32 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="visual-dps 数据采集 Web 服务")
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="监听端口（覆盖 config.json 的 server.port，默认 8765）",
+    )
+    p.add_argument(
+        "--host",
+        default=None,
+        metavar="HOST",
+        help="监听地址（覆盖 config.json 的 server.host，默认 127.0.0.1）",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
+    args = build_arg_parser().parse_args(argv)
     cfg = load_config_file(resolve_config_path(None))
     server = cfg.get("server") if isinstance(cfg.get("server"), dict) else {}
-    host = str(server.get("host") or "127.0.0.1")
-    port = int(server.get("port") or 8765)
+    host = str(args.host or server.get("host") or "127.0.0.1")
+    port = int(args.port if args.port is not None else server.get("port") or 8765)
     paths = resolve_app_paths(cfg)
     for p in (
         paths.json_dir,
@@ -66,3 +88,4 @@ def main() -> None:
         except RuntimeError as exc:
             print(f"❌ {exc}")
     uvicorn.run("api.app:app", host=host, port=port, reload=False)
+    return 0

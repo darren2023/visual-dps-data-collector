@@ -73,9 +73,11 @@ python scripts/verify_gpu.py
 
 ```bash
 python server.py
+# 端口冲突时指定监听端口（覆盖 config.json 的 server.port）
+python server.py --port 8770
 ```
 
-浏览器：**http://127.0.0.1:8765**
+浏览器：**http://127.0.0.1:8765**（默认端口，可用 `--port` 修改）
 
 ### 代码结构（Web）
 
@@ -118,7 +120,7 @@ python server.py
 | `inference` | `alarm_min_consecutive_frames` | 碰撞报警：连续命中帧数（默认 3，同 visual-dps） |
 | `inference` | `alarm_cooldown_frames` | 碰撞报警：同货框冷却帧数（默认 6） |
 | `source` | `video` | CLI 默认视频路径 |
-| `server` | `host` / `port` | Web 服务 |
+| `server` | `host` / `port` | Web 服务（启动时 `--host` / `--port` 可覆盖） |
 
 GPU 配置见上文「安装 → GPU 说明」。
 
