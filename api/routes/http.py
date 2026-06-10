@@ -25,6 +25,7 @@ from config_loader import (
     camera_storage_slug,
     default_pose_json_path,
     load_config_file,
+    pose_model_tier_from_backend,
     resolve_app_paths,
     resolve_config_path,
     sanitize_file_stem,
@@ -188,11 +189,13 @@ def list_records(
     summary: bool = True,
     offset: int = 0,
     limit: int = 0,
+    pose_tier: str = "",
 ) -> list[dict[str, Any]]:
-    """列出采集记录。默认返回全部；offset/limit 供前端分页拉取。"""
+    """列出采集记录。pose_tier 过滤 rtmpose-t/s/m；offset/limit 供前端分页拉取。"""
     paths = resolve_app_paths()
     paths.json_dir.mkdir(parents=True, exist_ok=True)
-    locators = iter_active_records(paths.json_dir)
+    tier_filter = str(pose_tier or "").strip().lower() or None
+    locators = iter_active_records(paths.json_dir, pose_tier=tier_filter)
     off = max(0, int(offset))
     if off:
         locators = locators[off:]
@@ -948,11 +951,12 @@ async def collect_video(
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise HTTPException(400, "仅计算骨架模式下请勿上传标注 JSON")
 
+    pose_tier = pose_model_tier_from_backend(settings.backend)
     if skeleton_only_flag:
         annotation_path = None
         camera_match_label = cam_norm or None
         if cam_norm:
-            cam_slug = allocate_camera_storage_slug(paths, cam_norm)
+            cam_slug = allocate_camera_storage_slug(paths, cam_norm, pose_tier=pose_tier)
             camera_match_slug = cam_slug
     else:
         try:
@@ -971,7 +975,7 @@ async def collect_video(
 
     cam_for_storage = camera_match_label or cam_norm
     if cam_for_storage and not cam_slug:
-        cam_slug = allocate_camera_storage_slug(paths, cam_for_storage)
+        cam_slug = allocate_camera_storage_slug(paths, cam_for_storage, pose_tier=pose_tier)
         camera_match_slug = cam_slug
     pose_path = default_pose_json_path(
         paths,
@@ -979,6 +983,7 @@ async def collect_video(
         video_stem=video_stem,
         job_id=job_id,
         camera_slug=cam_slug or None,
+        pose_tier=pose_tier,
     )
     record_id = record_id_from_pose_path(pose_path)
 
@@ -1083,12 +1088,11 @@ async def collect_batch(
     alarm_cooldown_frames: int = Form(0),
     skeleton_only: str = Form(""),
 ) -> dict[str, Any]:
-    """同一机位文件夹内多视频顺序批处理，结果写入 json_dir/{camera_slug}/。"""
+    """同一机位文件夹内多视频顺序批处理，结果写入 json_dir/{rtmpose-t}/{camera_slug}/。"""
     cam = normalize_corner_label(camera_label) if normalize_corner_label else str(camera_label or "").strip()
     if not cam:
         raise HTTPException(400, "请填写机位标识")
     paths = resolve_app_paths()
-    cam_slug = allocate_camera_storage_slug(paths, cam)
 
     video_files: list[UploadFile] = []
     for f in files:
@@ -1122,6 +1126,8 @@ async def collect_batch(
             else None,
         },
     )
+    pose_tier = pose_model_tier_from_backend(settings.backend)
+    cam_slug = allocate_camera_storage_slug(paths, cam, pose_tier=pose_tier)
 
     batch_id = uuid.uuid4().hex[:12]
     paths.upload_dir.mkdir(parents=True, exist_ok=True)

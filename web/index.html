@@ -256,6 +256,11 @@
           <button type="button" id="playback-load-record" class="primary-btn" disabled>加载并回放</button>
         </div>
         <div class="playback-records-filter">
+          <select id="playback-pose-tier" title="按 RTMPose 模型层筛选记录">
+            <option value="rtmpose-t" selected>RTMPose-T</option>
+            <option value="rtmpose-s">RTMPose-S</option>
+            <option value="rtmpose-m">RTMPose-M</option>
+          </select>
           <input type="search" id="playback-record-filter" placeholder="搜索名称 / 路径…" autocomplete="off" />
           <span id="playback-record-count" class="hint"></span>
         </div>

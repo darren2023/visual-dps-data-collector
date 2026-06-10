@@ -473,16 +473,24 @@ h2 {
   margin-bottom: 0.5rem;
 }
 
+.playback-records-filter select,
 .playback-records-filter input[type="search"] {
-  flex: 1;
-  min-width: 0;
-  max-width: 20rem;
   padding: 0.4rem 0.65rem;
   border: 1px solid #334155;
   border-radius: 6px;
   background: #0f172a;
   color: #e7ecf3;
   font-size: 0.88rem;
+}
+
+.playback-records-filter select {
+  flex-shrink: 0;
+}
+
+.playback-records-filter input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  max-width: 20rem;
 }
 
 .playback-records-list {

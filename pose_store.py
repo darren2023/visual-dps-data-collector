@@ -54,8 +54,8 @@ def record_id_from_path(path: Path) -> str:
 def meta_sidecar_path(json_dir: Path, record_id: str) -> Path:
     rid = str(record_id or "").strip().replace("\\", "/")
     if "/" in rid:
-        bucket, name = rid.split("/", 1)
-        return json_dir / bucket / f"{name}.meta.json"
+        parent, name = rid.rsplit("/", 1)
+        return json_dir / parent / f"{name}.meta.json"
     return json_dir / f"{rid}.meta.json"
 
 
@@ -110,18 +110,25 @@ def locate_record(json_dir: Path, record_id: str, *, include_archive: bool = Tru
     rid = str(record_id or "").strip().replace("\\", "/")
     if not rid:
         return None
+    # 支持 rtmpose-t/1-2-1/foo 等多级路径
+    direct = _locate_in_dir(json_dir, rid, include_archive=include_archive)
+    if direct:
+        return RecordLocator(rid, direct.storage, direct.path)
     if "/" in rid:
         bucket, name = rid.split("/", 1)
         found = _locate_in_dir(json_dir / bucket, name, include_archive=include_archive)
         if found:
             return RecordLocator(rid, found.storage, found.path)
-    return _locate_in_dir(json_dir, rid, include_archive=include_archive)
+    return None
 
 
-def iter_active_records(json_dir: Path) -> list[RecordLocator]:
+def iter_active_records(json_dir: Path, *, pose_tier: str | None = None) -> list[RecordLocator]:
+    from config_loader import is_pose_model_tier
+
     items: list[RecordLocator] = []
     seen: set[str] = set()
     reserved = {"archive", "annotations"}
+    tier_filter = str(pose_tier or "").strip().lower() or None
 
     def _skip_json_file(path: Path) -> bool:
         if path.name.endswith(".meta.json"):
@@ -135,8 +142,32 @@ def iter_active_records(json_dir: Path) -> list[RecordLocator]:
             seen.add(loc.record_id)
             items.append(loc)
 
-    for p in json_dir.iterdir():
+    def _scan_camera_dir(cam_dir: Path, id_prefix: str) -> None:
+        if not cam_dir.is_dir():
+            return
+        for child in cam_dir.iterdir():
+            if _skip_json_file(child):
+                continue
+            if child.is_dir() and is_v2_package(child):
+                rid = f"{id_prefix}/{child.name}" if id_prefix else child.name
+                _add(RecordLocator(rid, STORAGE_V2_PARQUET, child))
+            elif is_v1_json(child):
+                rid = f"{id_prefix}/{child.stem}" if id_prefix else child.stem
+                _add(RecordLocator(rid, STORAGE_V1_JSON, child))
+
+    for p in sorted(json_dir.iterdir(), key=lambda x: x.name):
         if p.name in reserved or p.name.startswith("."):
+            continue
+        if is_pose_model_tier(p.name):
+            if tier_filter and p.name != tier_filter:
+                continue
+            for cam_dir in sorted(p.iterdir(), key=lambda x: x.name):
+                if cam_dir.name in reserved or cam_dir.name.startswith("."):
+                    continue
+                _scan_camera_dir(cam_dir, f"{p.name}/{cam_dir.name}")
+            continue
+        if tier_filter:
+            # 已按模型层过滤时跳过旧版扁平机位目录
             continue
         if p.is_dir() and is_v2_package(p):
             _add(RecordLocator(p.name, STORAGE_V2_PARQUET, p))
@@ -145,15 +176,7 @@ def iter_active_records(json_dir: Path) -> list[RecordLocator]:
             _add(RecordLocator(p.stem, STORAGE_V1_JSON, p))
             continue
         if p.is_dir():
-            for child in p.iterdir():
-                if _skip_json_file(child):
-                    continue
-                if child.is_dir() and is_v2_package(child):
-                    rid = f"{p.name}/{child.name}"
-                    _add(RecordLocator(rid, STORAGE_V2_PARQUET, child))
-                elif is_v1_json(child):
-                    rid = f"{p.name}/{child.stem}"
-                    _add(RecordLocator(rid, STORAGE_V1_JSON, child))
+            _scan_camera_dir(p, p.name)
 
     items.sort(key=lambda loc: loc.path.stat().st_mtime, reverse=True)
     return items

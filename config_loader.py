@@ -115,6 +115,35 @@ def variant_to_backend(variant: str) -> str:
     return f"rtmpose_{v}"
 
 
+# 数据目录按姿态模型分层：localdata/json|video/rtmpose-{t,s,m}/{机位slug}/...
+POSE_MODEL_TIERS = frozenset({"rtmpose-t", "rtmpose-s", "rtmpose-m"})
+
+
+def pose_model_tier_from_variant(variant: str) -> str:
+    """姿态规格 t/s/m → 存储目录层 rtmpose-t / rtmpose-s / rtmpose-m。"""
+    return f"rtmpose-{backend_to_variant(variant)}"
+
+
+def pose_model_tier_from_backend(backend: str) -> str:
+    return pose_model_tier_from_variant(backend_to_variant(backend))
+
+
+def is_pose_model_tier(name: str) -> bool:
+    return str(name or "").strip().lower() in POSE_MODEL_TIERS
+
+
+def parse_record_path_segments(record_id: str) -> tuple[str | None, str | None, str | None]:
+    """record_id → (pose_model_tier, camera_slug, record_name)。"""
+    parts = [p for p in str(record_id or "").replace("\\", "/").split("/") if p]
+    if len(parts) >= 3 and is_pose_model_tier(parts[0]):
+        return parts[0], parts[1], parts[-1]
+    if len(parts) >= 2:
+        return None, parts[0], parts[-1]
+    if len(parts) == 1:
+        return None, None, parts[0]
+    return None, None, None
+
+
 def det_backend_to_variant(backend: str) -> str:
     key = str(backend or "").strip().lower()
     if key in _DET_BACKEND_TO_VARIANT:
@@ -215,19 +244,27 @@ def record_video_path(
     suffix: str,
     *,
     camera_slug: str | None = None,
+    pose_tier: str | None = None,
 ) -> Path:
-    """与 pose 记录同名的配套视频路径（支持机位子目录）。"""
+    """与 pose 记录同名的配套视频路径（支持 rtmpose-{t,s,m}/机位子目录）。"""
     ext = suffix if suffix.startswith(".") else f".{suffix}"
     stem = pose_record_path.stem if pose_record_path.is_file() else pose_record_path.name
     slug = camera_slug
-    if not slug:
+    tier = pose_tier
+    if not slug or not tier:
         try:
-            rel = pose_record_path.resolve().parent.relative_to(paths.json_dir.resolve())
+            base_path = pose_record_path.parent if pose_record_path.is_file() else pose_record_path
+            rel = base_path.resolve().relative_to(paths.json_dir.resolve())
             if rel.parts and str(rel) != ".":
-                slug = rel.parts[0]
+                if is_pose_model_tier(rel.parts[0]):
+                    tier = tier or rel.parts[0]
+                    if not slug and len(rel.parts) >= 2:
+                        slug = rel.parts[1]
+                elif not slug:
+                    slug = rel.parts[0]
         except ValueError:
-            slug = None
-    base = video_bucket_dir(paths, slug)
+            pass
+    base = video_bucket_dir(paths, slug, pose_tier=tier)
     return base / f"{stem}{ext}"
 
 
@@ -298,7 +335,12 @@ def parse_camera_folder_name(folder_name: str) -> tuple[str, int | None]:
     return s, None
 
 
-def camera_storage_slug_for_folder(paths: AppPaths, folder_name: str) -> tuple[str, str]:
+def camera_storage_slug_for_folder(
+    paths: AppPaths,
+    folder_name: str,
+    *,
+    pose_tier: str,
+) -> tuple[str, str]:
     """视频文件夹名 → (机位标识, 输出存储 slug)。"""
     base_label, dup_n = parse_camera_folder_name(folder_name)
     if not base_label:
@@ -306,7 +348,7 @@ def camera_storage_slug_for_folder(paths: AppPaths, folder_name: str) -> tuple[s
     base_slug = camera_storage_slug(base_label)
     if dup_n is not None:
         return base_label, f"{base_slug}-({dup_n})"
-    return base_label, allocate_camera_storage_slug(paths, base_label)
+    return base_label, allocate_camera_storage_slug(paths, base_label, pose_tier=pose_tier)
 
 
 def _bucket_dir_has_content(bucket_dir: Path) -> bool:
@@ -323,49 +365,77 @@ def _bucket_dir_has_content(bucket_dir: Path) -> bool:
     return False
 
 
-def camera_bucket_exists(paths: AppPaths, camera_slug: str) -> bool:
-    """localdata/json 或 localdata/video 下是否已有该机位目录且非空。"""
+def camera_bucket_exists(paths: AppPaths, camera_slug: str, *, pose_tier: str) -> bool:
+    """指定模型层下 json/video 是否已有该机位目录且非空。"""
     slug = str(camera_slug or "").strip()
-    if not slug:
+    tier = str(pose_tier or "").strip()
+    if not slug or not tier:
         return False
-    return _bucket_dir_has_content(paths.json_dir / slug) or _bucket_dir_has_content(
-        paths.video_dir / slug
+    return _bucket_dir_has_content(paths.json_dir / tier / slug) or _bucket_dir_has_content(
+        paths.video_dir / tier / slug
     )
 
 
-def allocate_camera_storage_slug(paths: AppPaths, camera_label: str) -> str:
+def allocate_camera_storage_slug(
+    paths: AppPaths,
+    camera_label: str,
+    *,
+    pose_tier: str,
+) -> str:
     """为机位分配存储目录名；若 base 已占用则依次使用 base-(2)、base-(3)…"""
+    tier = str(pose_tier or "").strip()
+    if not tier:
+        raise ValueError("pose_tier 不能为空")
     base = camera_storage_slug(camera_label)
-    if not camera_bucket_exists(paths, base):
+    if not camera_bucket_exists(paths, base, pose_tier=tier):
         return base
     for n in range(2, 10_000):
         candidate = f"{base}-({n})"
-        if not camera_bucket_exists(paths, candidate):
+        if not camera_bucket_exists(paths, candidate, pose_tier=tier):
             return candidate
-    raise ValueError(f"机位 {camera_label} 可用存储目录过多，请清理 localdata/json 后重试")
+    raise ValueError(f"机位 {camera_label} 在 {tier} 下可用存储目录过多，请清理后重试")
 
 
-def json_bucket_dir(paths: AppPaths, camera_slug: str | None) -> Path:
-    """骨架数据根目录；有机位时落在 json_dir/{camera_slug}/。"""
+def json_bucket_dir(
+    paths: AppPaths,
+    camera_slug: str | None,
+    *,
+    pose_tier: str | None = None,
+) -> Path:
+    """骨架数据目录：json_dir[/rtmpose-t][/{camera_slug}]/。"""
+    base = paths.json_dir
+    if pose_tier:
+        base = base / pose_tier
+        base.mkdir(parents=True, exist_ok=True)
     if camera_slug:
-        d = paths.json_dir / camera_slug
+        d = base / camera_slug
         d.mkdir(parents=True, exist_ok=True)
         return d
-    paths.json_dir.mkdir(parents=True, exist_ok=True)
-    return paths.json_dir
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
-def video_bucket_dir(paths: AppPaths, camera_slug: str | None) -> Path:
+def video_bucket_dir(
+    paths: AppPaths,
+    camera_slug: str | None,
+    *,
+    pose_tier: str | None = None,
+) -> Path:
+    """配套视频目录：video_dir[/rtmpose-t][/{camera_slug}]/。"""
+    base = paths.video_dir
+    if pose_tier:
+        base = base / pose_tier
+        base.mkdir(parents=True, exist_ok=True)
     if camera_slug:
-        d = paths.video_dir / camera_slug
+        d = base / camera_slug
         d.mkdir(parents=True, exist_ok=True)
         return d
-    paths.video_dir.mkdir(parents=True, exist_ok=True)
-    return paths.video_dir
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def record_id_for_pose_path(json_dir: Path, pose_path: Path) -> str:
-    """相对 json_dir 的记录 ID，含机位子目录时形如 1-6-2/foo_rtmpose_t。"""
+    """相对 json_dir 的记录 ID，形如 rtmpose-t/1-6-2/foo_rtmpose_t。"""
     jp = json_dir.resolve()
     pp = pose_path.resolve()
     if pp.is_file():
@@ -386,9 +456,11 @@ def default_pose_record_path(
     video_stem: str | None = None,
     job_id: str | None = None,
     camera_slug: str | None = None,
+    pose_tier: str | None = None,
 ) -> Path:
-    """记录目录命名：{机位目录/}{视频主名}_{backend}/（schema v2 Parquet 包）。"""
-    base = json_bucket_dir(paths, camera_slug)
+    """记录目录命名：{rtmpose-t/}{机位/}{视频主名}_{backend}/（schema v2 Parquet 包）。"""
+    tier = pose_tier or pose_model_tier_from_backend(backend)
+    base = json_bucket_dir(paths, camera_slug, pose_tier=tier)
     prefix = sanitize_file_stem(video_stem) if video_stem else "video"
     safe_backend = re.sub(r"[^\w.-]", "_", backend)
     candidate = base / f"{prefix}_{safe_backend}"
@@ -405,6 +477,7 @@ def default_pose_json_path(
     video_stem: str | None = None,
     job_id: str | None = None,
     camera_slug: str | None = None,
+    pose_tier: str | None = None,
 ) -> Path:
     """兼容旧名：新采集默认返回 Parquet 包目录。"""
     return default_pose_record_path(
@@ -413,6 +486,7 @@ def default_pose_json_path(
         video_stem=video_stem,
         job_id=job_id,
         camera_slug=camera_slug,
+        pose_tier=pose_tier,
     )
 
 

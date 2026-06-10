@@ -16,7 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config_loader import camera_storage_slug, resolve_app_paths, resolve_config_path
+from config_loader import (
+    camera_storage_slug,
+    parse_record_path_segments,
+    resolve_app_paths,
+    resolve_config_path,
+)
 from pose_store import iter_active_records, meta_sidecar_path
 
 from api.record_service import (
@@ -81,9 +86,8 @@ def repair_record(record_id: str, *, camera_slug_hint: str = "") -> str:
         except json.JSONDecodeError:
             pass
 
-    slug_hint = camera_slug_hint or (
-        record_id.split("/", 1)[0] if "/" in record_id else str(meta.get("camera_slug") or "")
-    )
+    _, parsed_slug, _ = parse_record_path_segments(record_id)
+    slug_hint = camera_slug_hint or str(meta.get("camera_slug") or "") or (parsed_slug or "")
     if slug_hint and not meta.get("camera_label"):
         label = _camera_label_for_slug(slug_hint)
         if label:

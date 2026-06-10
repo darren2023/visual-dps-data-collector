@@ -14,7 +14,7 @@
 
 说明:
   - 递归包含所有子文件夹中的视频
-  - 结果写入 localdata/json/{机位slug}/{视频主名}_{backend}/
+  - 结果写入 localdata/json/{rtmpose-t|s|m}/{机位slug}/{视频主名}_{backend}/
   - --group-by-subfolder：用 root 下第一级子目录名作机位（如 1-2组-1、1-2组-2）
   - 输入文件夹不能同名时：同机位第二批用 1-2组-1(2)、1-2组-1(3)…（机位仍为 1-2组-1）
   - 输出 slug：1-2组-1 → 1-2-1；1-2组-1(2) → 1-2-1-(2)；无后缀且已占用则自动递增
@@ -49,6 +49,7 @@ from config_loader import (
     default_pose_json_path,
     json_bucket_dir,
     parse_camera_folder_name,
+    pose_model_tier_from_backend,
     resolve_app_paths,
     resolve_config_path,
     sanitize_file_stem,
@@ -179,8 +180,9 @@ def base_record_dir(
     backend: str,
     video_stem: str,
     camera_slug: str,
+    pose_tier: str,
 ) -> Path:
-    base = json_bucket_dir(paths, camera_slug or None)
+    base = json_bucket_dir(paths, camera_slug or None, pose_tier=pose_tier)
     prefix = sanitize_file_stem(video_stem)
     safe_backend = re.sub(r"[^\w.-]", "_", backend)
     return base / f"{prefix}_{safe_backend}"
@@ -269,12 +271,14 @@ def collect_one_video(
     video_stem = sanitize_file_stem(video_path.stem)
     source_name = Path(rel_name).name
 
+    pose_tier = pose_model_tier_from_backend(settings.backend)
     pose_path = default_pose_json_path(
         paths,
         backend=settings.backend,
         video_stem=video_stem,
         job_id=f"{batch_id}_{index}",
         camera_slug=camera_slug or None,
+        pose_tier=pose_tier,
     )
     if skip_existing:
         expected = base_record_dir(
@@ -282,6 +286,7 @@ def collect_one_video(
             backend=settings.backend,
             video_stem=video_stem,
             camera_slug=camera_slug,
+            pose_tier=pose_tier,
         )
         if record_already_exists(expected):
             return "skip", f"已存在 {expected.relative_to(paths.json_dir)}"
@@ -359,6 +364,7 @@ def collect_one_video(
         "video_stem": video_stem,
         "camera_label": camera_label or None,
         "camera_slug": camera_slug or None,
+        "pose_model_tier": pose_tier,
         "storage": data.get("storage") or STORAGE_V2_PARQUET,
         "pose_file": f"{record_id}/manifest.json",
         "source_video": source_name,
@@ -468,19 +474,24 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         grouped[folder_key].append((video_path, rel))
 
+    pose_tier = pose_model_tier_from_backend(settings.backend)
     flat: list[tuple[Path, str, str, str]] = []
     label_by_folder: dict[str, str] = {}
     slug_by_folder: dict[str, str] = {}
     for folder_key in sorted(grouped.keys()):
         if args.group_by_subfolder:
-            cam_label, cam_slug = camera_storage_slug_for_folder(paths, folder_key)
+            cam_label, cam_slug = camera_storage_slug_for_folder(
+                paths, folder_key, pose_tier=pose_tier
+            )
         else:
             cam_label, dup_n = parse_camera_folder_name(folder_key)
             cam_label = cam_label or folder_key
             if dup_n is not None:
                 cam_slug = f"{camera_storage_slug(cam_label)}-({dup_n})"
             else:
-                cam_slug = allocate_camera_storage_slug(paths, cam_label)
+                cam_slug = allocate_camera_storage_slug(
+                    paths, cam_label, pose_tier=pose_tier
+                )
         label_by_folder[folder_key] = cam_label
         slug_by_folder[folder_key] = cam_slug
         for video_path, rel in grouped[folder_key]:
@@ -492,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     total = len(flat)
     print(f"📁 根目录: {root}")
     print(f"🎬 视频数: {total}（扩展名: {', '.join(sorted(VIDEO_EXTENSIONS))}）")
-    print(f"📦 姿态: {settings.backend} · 检测: {settings.det_backend}")
+    print(f"📦 姿态: {settings.backend} · 检测: {settings.det_backend} · 数据层: {pose_tier}/")
     print(f"⏱️ 采集节拍 frame_rate={settings.frame_rate}（0=全速）")
     if settings.save_video:
         print("💾 保存配套视频: 是（复制到 localdata/video，不移动源文件）")
@@ -597,8 +608,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for folder_key, cam_slug in slug_by_folder.items():
             cam_label = label_by_folder[folder_key]
-            bucket = paths.json_dir / cam_slug
-            bucket.mkdir(parents=True, exist_ok=True)
+            bucket = json_bucket_dir(paths, cam_slug, pose_tier=pose_tier)
             manifest_path = bucket / f"_batch_{batch_id}.json"
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(

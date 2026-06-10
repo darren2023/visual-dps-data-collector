@@ -4,12 +4,25 @@ let playbackSelectedCameraSlug = null;
 /** 用户主动返回一级机位列表时置 true，避免播放中记录导致自动下钻 */
 let playbackCameraListPinned = false;
 let playbackRecordsCache = [];
+/** 回放列表当前筛选的模型数据层（rtmpose-t / rtmpose-s / rtmpose-m） */
+let playbackPoseTier = "rtmpose-t";
+
+const POSE_MODEL_TIERS = new Set(["rtmpose-t", "rtmpose-s", "rtmpose-m"]);
+
+function cameraSlugFromRecordId(recordId) {
+  const parts = String(recordId || "")
+    .split("/")
+    .filter(Boolean);
+  if (parts.length >= 3 && POSE_MODEL_TIERS.has(parts[0])) return parts[1];
+  if (parts.length >= 2) return parts[0];
+  return null;
+}
 
 function recordGroupKey(s) {
   return (
     s.camera_slug ||
     s.camera_label ||
-    (String(s.record_id || "").includes("/") ? String(s.record_id).split("/")[0] : "") ||
+    cameraSlugFromRecordId(s.record_id) ||
     "未分类"
   );
 }
@@ -28,8 +41,7 @@ function cameraSlugForRecordId(recordId) {
   if (!recordId) return null;
   const item = playbackRecordsCache.find((s) => s.record_id === recordId);
   if (item) return recordGroupKey(item);
-  if (String(recordId).includes("/")) return String(recordId).split("/")[0];
-  return null;
+  return cameraSlugFromRecordId(recordId);
 }
 
 function focusPlaybackCameraForRecord(recordId) {
@@ -282,9 +294,10 @@ function renderPlaybackRecordsList(items) {
 
   if (!playbackSelectedCameraSlug) {
     if (countEl) {
+      const tierLabel = playbackPoseTier || "rtmpose-t";
       countEl.textContent = filterQ
-        ? `${keys.length} 个机位 · 匹配 ${filtered.length} / ${items.length} 条`
-        : `${keys.length} 个机位 · 共 ${items.length} 条`;
+        ? `${tierLabel} · ${keys.length} 个机位 · 匹配 ${filtered.length} / ${items.length} 条`
+        : `${tierLabel} · ${keys.length} 个机位 · 共 ${items.length} 条`;
     }
     list.innerHTML = `<ul class="camera-group-list">${keys
       .map((key) => renderCameraGroupItem(key, groups.get(key)))
@@ -324,12 +337,13 @@ function renderPlaybackRecordsList(items) {
 }
 
 /** 分页拉取全部记录（突破历史 500 条上限） */
-async function fetchAllRecordSummaries({ onProgress = null } = {}) {
+async function fetchAllRecordSummaries({ onProgress = null, poseTier = playbackPoseTier } = {}) {
   const pageSize = 500;
   const all = [];
+  const tier = String(poseTier || "rtmpose-t").trim();
   for (let offset = 0; ; offset += pageSize) {
     const res = await fetch(
-      `/api/records?summary=1&offset=${offset}&limit=${pageSize}`
+      `/api/records?summary=1&offset=${offset}&limit=${pageSize}&pose_tier=${encodeURIComponent(tier)}`
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -368,6 +382,17 @@ async function loadRecords({ quiet = false } = {}) {
 
 function initPlaybackRecordFilter() {
   const input = $("#playback-record-filter");
+  const tierSel = $("#playback-pose-tier");
+  if (tierSel && !tierSel.dataset.bound) {
+    tierSel.dataset.bound = "1";
+    playbackPoseTier = tierSel.value || "rtmpose-t";
+    tierSel.addEventListener("change", async () => {
+      playbackPoseTier = tierSel.value || "rtmpose-t";
+      playbackSelectedCameraSlug = null;
+      playbackCameraListPinned = false;
+      await loadRecords();
+    });
+  }
   if (!input || input.dataset.bound) return;
   input.dataset.bound = "1";
   let t = null;

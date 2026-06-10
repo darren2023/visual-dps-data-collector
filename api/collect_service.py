@@ -21,6 +21,7 @@ from config_loader import (
     camera_storage_slug,
     default_pose_json_path,
     json_bucket_dir,
+    pose_model_tier_from_backend,
     resolve_app_paths,
     resolve_config_path,
     sanitize_file_stem,
@@ -72,6 +73,7 @@ def build_collect_config_snapshot(
     """采集任务配置快照，写入 meta 与批处理清单，便于与结果数据关联。"""
     return {
         "backend": backend,
+        "pose_model_tier": pose_model_tier_from_backend(backend),
         "variant": variant,
         "det_variant": det_variant,
         "det_backend": det_backend,
@@ -216,6 +218,7 @@ def run_job(
             "video_stem": video_stem,
             "camera_label": camera_label or None,
             "camera_slug": camera_slug or None,
+            "pose_model_tier": pose_model_tier_from_backend(backend),
             "storage": data.get("storage") or STORAGE_V2_PARQUET,
             "pose_file": f"{record_id}/manifest.json",
             "source_video": source_video_name,
@@ -428,12 +431,14 @@ def run_batch_job(
             current_video=source_name,
             current_video_started_at=video_t0,
         )
+        pose_tier = pose_model_tier_from_backend(backend)
         pose_path = default_pose_json_path(
             paths,
             backend=backend,
             video_stem=video_stem,
             job_id=sub_id,
             camera_slug=camera_slug or None,
+            pose_tier=pose_tier,
         )
         per_config = {
             **collect_config,
@@ -517,7 +522,8 @@ def run_batch_job(
         "errors": errors,
     }
     try:
-        bucket = json_bucket_dir(paths, camera_slug or None)
+        pose_tier = str(collect_config.get("pose_model_tier") or pose_model_tier_from_backend(backend))
+        bucket = json_bucket_dir(paths, camera_slug or None, pose_tier=pose_tier)
         manifest_path = bucket / f"_batch_{batch_id}.json"
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(batch_manifest, f, ensure_ascii=False, indent=2)

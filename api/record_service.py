@@ -21,11 +21,15 @@ from annotation_store import (
 from event_engine.annotation_boxes import load_annotation_config
 from config_loader import (
     AppPaths,
+    parse_record_path_segments,
+    pose_model_tier_from_backend,
+    pose_model_tier_from_variant,
     record_id_for_pose_path,
     record_video_path,
     resolve_app_paths,
     sanitize_file_stem,
     variant_to_backend,
+    video_bucket_dir,
 )
 from model_assets import VIDEO_EXTENSIONS
 from pose_store import (
@@ -177,6 +181,25 @@ def annotation_frame_size(payload: dict[str, Any]) -> tuple[int, int]:
     return 0, 0
 
 
+def _video_base_for_record(
+    paths: AppPaths,
+    record_id: str,
+    meta: dict[str, Any],
+) -> Path:
+    """解析记录配套视频所在目录（含 rtmpose-t/机位 分层）。"""
+    pose_tier = str(meta.get("pose_model_tier") or "").strip()
+    camera_slug = str(meta.get("camera_slug") or "").strip()
+    if not pose_tier or not camera_slug:
+        parsed_tier, parsed_slug, _ = parse_record_path_segments(record_id)
+        pose_tier = pose_tier or (parsed_tier or "")
+        camera_slug = camera_slug or (parsed_slug or "")
+    if pose_tier and camera_slug:
+        return video_bucket_dir(paths, camera_slug, pose_tier=pose_tier)
+    if camera_slug:
+        return paths.video_dir / camera_slug
+    return paths.video_dir
+
+
 def parse_save_video_flag(raw: Any, *, default: bool) -> bool:
     if raw is None:
         return default
@@ -213,12 +236,11 @@ def video_path_for_record(record_id: str) -> Path | None:
         seen.add(key)
         candidates.append(p)
 
-    camera_slug = ""
-    if meta:
-        camera_slug = str(meta.get("camera_slug") or "").strip()
-    if not camera_slug and "/" in str(record_id):
-        camera_slug = str(record_id).split("/", 1)[0]
-    video_base = paths.video_dir / camera_slug if camera_slug else paths.video_dir
+    camera_slug = str(meta.get("camera_slug") or "").strip() if meta else ""
+    if not camera_slug:
+        _, parsed_slug, _ = parse_record_path_segments(record_id)
+        camera_slug = parsed_slug or ""
+    video_base = _video_base_for_record(paths, record_id, meta or {})
     pkg_stem = locator.path.name if locator.path.is_dir() else Path(str(record_id)).name
 
     if meta:
@@ -337,10 +359,7 @@ def _video_stem_for_summary(record_id: str, locator, meta: dict[str, Any]) -> st
 
 
 def _has_video_fast(record_id: str, locator, meta: dict[str, Any], paths: AppPaths) -> bool:
-    camera_slug = str(meta.get("camera_slug") or "").strip()
-    if not camera_slug and "/" in str(record_id):
-        camera_slug = str(record_id).split("/", 1)[0]
-    video_base = paths.video_dir / camera_slug if camera_slug else paths.video_dir
+    video_base = _video_base_for_record(paths, record_id, meta)
     pkg_stem = locator.path.name if locator.path.is_dir() else Path(str(record_id)).name
 
     vf = str(meta.get("video_file") or "").strip()
@@ -449,8 +468,15 @@ def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str,
     frame_count = meta.get("frame_count") if meta.get("frame_count") is not None else header.get("frame_count")
 
     camera_slug = str(meta.get("camera_slug") or "").strip()
-    if not camera_slug and "/" in str(record_id):
-        camera_slug = str(record_id).split("/", 1)[0]
+    pose_model_tier = str(meta.get("pose_model_tier") or "").strip()
+    if not camera_slug or not pose_model_tier:
+        parsed_tier, parsed_slug, _ = parse_record_path_segments(record_id)
+        camera_slug = camera_slug or (parsed_slug or "")
+        pose_model_tier = pose_model_tier or (parsed_tier or "")
+    if not pose_model_tier:
+        variant = str(meta.get("variant") or header.get("variant") or "")
+        backend_for_tier = str(meta.get("backend") or variant_to_backend(variant))
+        pose_model_tier = pose_model_tier_from_backend(backend_for_tier)
 
     video_stem = _video_stem_for_summary(record_id, locator, meta)
     backend = str(meta.get("backend") or variant_to_backend(str(meta.get("variant") or header.get("variant") or "")))
@@ -474,6 +500,7 @@ def record_summary_for_list(locator, paths: AppPaths | None = None) -> dict[str,
         "storage": locator.storage,
         "display_name": display_name,
         "camera_slug": camera_slug,
+        "pose_model_tier": pose_model_tier,
         "camera_label": str(meta.get("camera_label") or "").strip(),
         "video_stem": video_stem,
         "frame_count": frame_count,
@@ -545,8 +572,16 @@ def record_meta_for_list(locator) -> dict[str, Any]:
         meta["display_name"] = display_name_from_pose_file(
             meta.get("pose_label") or record_id, str(meta.get("backend") or "")
         )
-    if "/" in record_id and not meta.get("camera_slug"):
-        meta["camera_slug"] = record_id.split("/", 1)[0]
+    if not meta.get("camera_slug") or not meta.get("pose_model_tier"):
+        parsed_tier, parsed_slug, _ = parse_record_path_segments(record_id)
+        if parsed_slug and not meta.get("camera_slug"):
+            meta["camera_slug"] = parsed_slug
+        if parsed_tier and not meta.get("pose_model_tier"):
+            meta["pose_model_tier"] = parsed_tier
+        elif not meta.get("pose_model_tier"):
+            variant = str(meta.get("variant") or "")
+            if variant:
+                meta["pose_model_tier"] = pose_model_tier_from_variant(variant)
     video_stem = resolve_video_stem_from_record(
         record_id,
         json_dir=paths.json_dir,
