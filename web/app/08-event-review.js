@@ -422,6 +422,57 @@ function scrollActiveEventRowIntoView() {
   row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
+/** 按右栏面板剩余高度限制「全部事件列表」滚动区（details 无法可靠参与 flex 限高） */
+let eventReviewListScrollSyncRaf = 0;
+
+function syncEventReviewListScrollHeight() {
+  const panel = eventsPanel;
+  const details = $("#event-review-list-details");
+  const wrap = $("#event-review-list-scroll");
+  if (!wrap) return;
+
+  if (!panel || panel.classList.contains("hidden") || !details?.open) {
+    wrap.style.removeProperty("max-height");
+    wrap.style.removeProperty("overflow-y");
+    return;
+  }
+
+  const panelRect = panel.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const available = panelRect.bottom - wrapRect.top - 8;
+  wrap.style.maxHeight = `${Math.max(120, Math.floor(available))}px`;
+  wrap.style.overflowY = "auto";
+}
+
+function scheduleEventReviewListScrollHeight() {
+  if (eventReviewListScrollSyncRaf) {
+    cancelAnimationFrame(eventReviewListScrollSyncRaf);
+  }
+  eventReviewListScrollSyncRaf = requestAnimationFrame(() => {
+    eventReviewListScrollSyncRaf = requestAnimationFrame(() => {
+      eventReviewListScrollSyncRaf = 0;
+      syncEventReviewListScrollHeight();
+    });
+  });
+}
+
+function bindEventReviewListScrollSync() {
+  const panel = eventsPanel;
+  const details = $("#event-review-list-details");
+  if (!panel || !details || details.dataset.scrollSyncBound) return;
+  details.dataset.scrollSyncBound = "1";
+
+  details.addEventListener("toggle", () => scheduleEventReviewListScrollHeight());
+  window.addEventListener("resize", () => scheduleEventReviewListScrollHeight());
+
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => scheduleEventReviewListScrollHeight());
+    ro.observe(panel);
+    const dock = $("#event-review-dock");
+    if (dock) ro.observe(dock);
+  }
+}
+
 function updateReviewDock() {
   const list = filteredPlaybackEvents();
   const ev = getActiveEvent() ?? getActiveFilteredEvent();
@@ -483,6 +534,7 @@ function updateReviewDock() {
       tokensEl.setAttribute("aria-hidden", "true");
     }
     verifiedTag?.classList.add("hidden");
+    scheduleEventReviewListScrollHeight();
     return;
   }
 
@@ -518,6 +570,7 @@ function updateReviewDock() {
   if (verifiedTag) {
     verifiedTag.classList.toggle("hidden", !isEventVerified(ev));
   }
+  scheduleEventReviewListScrollHeight();
 }
 
 function renderEventReviewTable(list = null) {
@@ -575,6 +628,7 @@ function renderEventReviewTable(list = null) {
   });
 
   scrollActiveEventRowIntoView();
+  scheduleEventReviewListScrollHeight();
 }
 
 async function markActiveEventVerified(verified) {
@@ -746,6 +800,7 @@ function renderEventReviewList() {
     eventJumpList.innerHTML = "";
   }
   renderEventMarkers();
+  scheduleEventReviewListScrollHeight();
 }
 
 /** @deprecated 兼容旧调用 */

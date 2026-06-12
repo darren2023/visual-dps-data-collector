@@ -602,23 +602,8 @@ main:has(#panel-playback.active) {
 }
 
 .playback-layout-right .event-review-list-details {
-  flex: 1;
+  flex-shrink: 0;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.playback-layout-right .event-review-list-details[open] {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.playback-layout-right .event-review-table-wrap {
-  flex: 1;
-  min-height: 8rem;
-  max-height: none;
 }
 
 @media (max-width: 1100px) {
@@ -1492,10 +1477,24 @@ main:has(#panel-playback.active) {
 }
 
 .event-review-table-wrap {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   max-height: min(28vh, 220px);
   border: 1px solid #334155;
   border-radius: 4px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 全部事件列表：右栏展开时由 JS 按面板剩余高度设置 max-height */
+#event-review-list-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.playback-layout-right #event-review-list-details[open] #event-review-list-scroll {
+  min-height: 8rem;
+  max-height: calc(100vh - 28rem);
 }
 
 @media (max-width: 720px) {
