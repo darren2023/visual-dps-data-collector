@@ -195,7 +195,7 @@ function buildVerifiedTruePayload() {
   return playbackEvents.filter((e) => isEventVerified(e)).map((e) => eventToReviewPayload(e));
 }
 
-function applyEventReviewResponse(body, seq, forRecordId = currentRecordId) {
+function applyEventReviewResponse(body, seq, forRecordId = currentRecordId, options = {}) {
   if (seq !== eventReviewSaveSeq) return false;
   const savedFor = String(body?.record_id || forRecordId || "").trim();
   const applyUi = !!savedFor && savedFor === currentRecordId;
@@ -208,6 +208,9 @@ function applyEventReviewResponse(body, seq, forRecordId = currentRecordId) {
     if (prevKey && playbackEvents.some((e) => eventRowKey(e) === prevKey)) {
       activeEventKey = prevKey;
     }
+  } else if (applyUi && (body.light || body.event_review)) {
+    syncVerifiedKeysFromEvents(playbackEvents, body.event_review);
+    applyVerifiedFlagsToEvents();
   }
 
   if (savedFor) {
@@ -228,12 +231,19 @@ function applyEventReviewResponse(body, seq, forRecordId = currentRecordId) {
 
   currentEventReviewStatus =
     body.event_review_status || body.event_review?.status || currentEventReviewStatus || "in_progress";
-  const n = countVerifiedEvents();
-  setEventReviewSaveStatus(`已保存 · 标真 ${n} 条`);
+  const n =
+    typeof body.verified_true_count === "number" ? body.verified_true_count : countVerifiedEvents();
+  setEventReviewSaveStatus(options.statusMessage || `已保存 · 标真 ${n} 条`);
   refreshEventCountLabel();
   updateReviewDock();
-  if ($("#event-review-list-details")?.open) renderEventReviewTable();
-  renderEventMarkers();
+  if (!options.skipTable && $("#event-review-list-details")?.open) {
+    if (options.patchTableOnly) patchEventReviewTableVerifiedStates();
+    else renderEventReviewTable();
+  }
+  if (!options.skipMarkers) {
+    if (options.patchMarkersOnly) patchEventMarkersVerifiedStates();
+    else renderEventMarkers();
+  }
   return true;
 }
 
@@ -310,6 +320,47 @@ async function persistEventReviewVerifiedList(verified_true, statusMessage = "�
   });
 }
 
+/** 全部标真/取消：轻量 PATCH，服务端构建 verified_true，响应不含 events */
+async function persistEventReviewBulkAll(markAll, statusMessage) {
+  const recordId = currentRecordId;
+  if (!recordId) return false;
+  const eventTotal = playbackEvents.length;
+  const seq = ++eventReviewSaveSeq;
+  const doneMessage = markAll ? `已全部标真 · 共 ${eventTotal} 条` : "已取消全部标真";
+  return runSerializedEventReviewSave(async () => {
+    if (recordId === currentRecordId) {
+      setEventReviewSaveStatus(statusMessage, "pending");
+    }
+    try {
+      const res = await fetch(recordApiUrl(recordId, "/event-review"), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_all_verified",
+          mark_all: !!markAll,
+          event_total: eventTotal,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `保存失败 (${res.status})`);
+      }
+      const body = await res.json();
+      return applyEventReviewResponse(body, seq, recordId, {
+        patchTableOnly: true,
+        patchMarkersOnly: true,
+        statusMessage: doneMessage,
+      });
+    } catch (err) {
+      if (seq !== eventReviewSaveSeq) return false;
+      if (recordId === currentRecordId) {
+        setEventReviewSaveStatus(err.message || "保存失败", "error");
+      }
+      return false;
+    }
+  });
+}
+
 async function saveEventReviewNow() {
   const verified_true = buildVerifiedTruePayload();
   await persistEventReviewVerifiedList(verified_true);
@@ -362,23 +413,15 @@ async function markAllEventsVerified(verified) {
   const snapshot = new Set(verifiedTrueKeys);
   playbackEvents.forEach((ev) => setEventVerified(ev, verified));
   updateReviewDock();
-  if ($("#event-review-list-details")?.open) renderEventReviewTable();
-  renderEventMarkers();
+  patchEventReviewVerifiedUi();
 
-  const verified_true = verified ? playbackEvents.map((e) => eventToReviewPayload(e)) : [];
   const statusMessage = verified ? `全部标真 ${total} 条 · 保存中…` : "取消全部标真 · 保存中…";
-  const ok = await persistEventReviewVerifiedList(verified_true, statusMessage);
+  const ok = await persistEventReviewBulkAll(verified, statusMessage);
   if (!ok) {
     restoreVerifiedSnapshot(snapshot);
     updateReviewDock();
-    if ($("#event-review-list-details")?.open) renderEventReviewTable();
-    renderEventMarkers();
-    return;
+    patchEventReviewVerifiedUi();
   }
-  setEventReviewSaveStatus(
-    verified ? `已全部标真 · 共 ${total} 条` : "已取消全部标真",
-    ""
-  );
 }
 
 async function markEventReviewCompleted() {
@@ -657,6 +700,37 @@ function updateReviewDock() {
     verifiedTag.classList.toggle("hidden", !isEventVerified(ev));
   }
   scheduleEventReviewListScrollHeight();
+}
+
+function patchEventReviewTableVerifiedStates() {
+  if (!eventJumpList) return;
+  eventJumpList.querySelectorAll(".event-review-row").forEach((row) => {
+    const key = row.dataset.eventKey;
+    if (!key) return;
+    const isVerified = verifiedTrueKeys.has(key);
+    row.classList.toggle("verified-true", isVerified);
+    const input = row.querySelector(".event-verify-check");
+    if (input) input.checked = isVerified;
+  });
+}
+
+function patchEventMarkersVerifiedStates() {
+  if (!eventMarkersEl) return;
+  eventMarkersEl.querySelectorAll(".event-marker").forEach((dot) => {
+    const key = dot.dataset.eventKey;
+    if (!key) return;
+    const ev = playbackEvents.find((item) => eventRowKey(item) === key);
+    if (!ev) return;
+    const isVerified = isEventVerified(ev);
+    dot.classList.toggle("verified", isVerified);
+    const verifiedNote = isVerified ? " · 已标真" : "";
+    dot.title = `${ev.event_type === "alarm" ? "告警" : "碰撞"} ${formatTime(ev.timestamp_sec)} · ${formatEventTokens(ev.box_tokens)}${verifiedNote}`;
+  });
+}
+
+function patchEventReviewVerifiedUi() {
+  if ($("#event-review-list-details")?.open) patchEventReviewTableVerifiedStates();
+  patchEventMarkersVerifiedStates();
 }
 
 function renderEventReviewTable(list = null) {
