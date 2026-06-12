@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>骨架采集与回放</title>
-  <link rel="stylesheet" href="style.css?v=44" />
+  <link rel="stylesheet" href="style.css?v=50" />
 </head>
 <body>
   <header>
@@ -257,14 +257,44 @@
               </h2>
               <button type="button" id="playback-load-record" class="primary-btn" disabled>加载并回放</button>
             </div>
-            <div class="playback-records-filter">
-              <select id="playback-pose-tier" title="按 RTMPose 模型层筛选记录">
-                <option value="rtmpose-t" selected>RTMPose-T</option>
-                <option value="rtmpose-s">RTMPose-S</option>
-                <option value="rtmpose-m">RTMPose-M</option>
-              </select>
-              <input type="search" id="playback-record-filter" placeholder="搜索名称 / 路径…" autocomplete="off" />
-              <span id="playback-record-count" class="hint"></span>
+            <div class="playback-records-filters">
+              <div class="playback-records-tier-filter">
+                <select id="playback-pose-tier" title="按 RTMPose 模型层筛选记录">
+                  <option value="rtmpose-t" selected>RTMPose-T</option>
+                  <option value="rtmpose-s">RTMPose-S</option>
+                  <option value="rtmpose-m">RTMPose-M</option>
+                </select>
+              </div>
+              <div class="playback-records-search-filter">
+                <input type="search" id="playback-record-filter" placeholder="搜索名称 / 路径…" autocomplete="off" />
+              </div>
+              <div class="playback-records-review-filter">
+                <select id="playback-review-status-filter" title="按人工事件复核状态筛选">
+                  <option value="all" selected>复核状态 · 全部</option>
+                  <option value="completed">已复核</option>
+                  <option value="no_collision">无碰撞</option>
+                  <option value="in_progress">复核中</option>
+                  <option value="not_started">未复核</option>
+                </select>
+              </div>
+              <div class="playback-records-verified-filter">
+                <select id="playback-verified-filter" title="按是否标真筛选">
+                  <option value="all" selected>标真 · 全部</option>
+                  <option value="yes">有标真</option>
+                  <option value="no">无标真</option>
+                </select>
+              </div>
+              <div class="playback-records-tag-filter">
+                <input
+                  type="search"
+                  id="playback-tag-filter"
+                  placeholder="标签筛选（逗号分隔，需全部匹配）"
+                  list="playback-tag-suggestions"
+                  autocomplete="off"
+                />
+                <datalist id="playback-tag-suggestions"></datalist>
+              </div>
+              <span id="playback-record-count" class="hint playback-records-count"></span>
             </div>
             <div id="session-list" class="playback-records-list"></div>
           </div>
@@ -355,9 +385,12 @@
                 <span id="event-save-status" class="event-save-status hint" aria-live="polite"></span>
               </div>
               <div id="event-review-current" class="event-review-current">
-                <span id="event-review-badge" class="event-badge collision">—</span>
-                <span id="event-review-meta" class="event-review-meta">请选择或等待加载事件</span>
-                <span id="event-review-verified-tag" class="event-review-verified-tag hidden">已标真</span>
+                <div class="event-review-current-main">
+                  <span id="event-review-badge" class="event-badge collision">—</span>
+                  <span id="event-review-meta" class="event-review-meta">请选择或等待加载事件</span>
+                  <span id="event-review-verified-tag" class="event-review-verified-tag hidden">已标真</span>
+                </div>
+                <div id="event-review-tokens" class="event-review-tokens" aria-hidden="true">&nbsp;</div>
               </div>
               <div class="event-review-actions">
                 <button type="button" id="event-prev-btn" class="btn-review-nav" title="快捷键 ↑">‹ 上一条</button>

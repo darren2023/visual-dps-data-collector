@@ -429,6 +429,7 @@ function updateReviewDock() {
   const posEl = $("#event-review-position");
   const badgeEl = $("#event-review-badge");
   const metaEl = $("#event-review-meta");
+  const tokensEl = $("#event-review-tokens");
   const verifiedTag = $("#event-review-verified-tag");
   const summaryEl = $("#event-review-list-summary");
   const verifiedN = countVerifiedEvents();
@@ -466,6 +467,10 @@ function updateReviewDock() {
         ? "无需人工复核"
         : "—";
     }
+    if (tokensEl) {
+      tokensEl.textContent = "\u00a0";
+      tokensEl.setAttribute("aria-hidden", "true");
+    }
     verifiedTag?.classList.add("hidden");
     return;
   }
@@ -473,6 +478,10 @@ function updateReviewDock() {
   if (!list.length) {
     if (posEl) posEl.textContent = "队列已清空";
     if (metaEl) metaEl.textContent = "当前筛选下无待复核事件";
+    if (tokensEl) {
+      tokensEl.textContent = "\u00a0";
+      tokensEl.setAttribute("aria-hidden", "true");
+    }
     verifiedTag?.classList.add("hidden");
     return;
   }
@@ -497,7 +506,14 @@ function updateReviewDock() {
     badgeEl.className = `event-badge ${ev.event_type}`;
   }
   if (metaEl) {
-    metaEl.textContent = `${formatTime(ev.timestamp_sec)} · 帧 ${ev.frame_idx} · ${formatEventTokens(ev.box_tokens)}`;
+    metaEl.textContent = `${formatTime(ev.timestamp_sec)} · 帧 ${ev.frame_idx}`;
+  }
+  if (tokensEl) {
+    const tokenText = formatEventTokens(ev.box_tokens);
+    tokensEl.textContent = tokenText || "\u00a0";
+    tokensEl.setAttribute("aria-hidden", tokenText ? "false" : "true");
+    if (tokenText) tokensEl.title = tokenText;
+    else tokensEl.removeAttribute("title");
   }
   if (verifiedTag) {
     verifiedTag.classList.toggle("hidden", !isEventVerified(ev));
