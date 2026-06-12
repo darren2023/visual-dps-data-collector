@@ -37,6 +37,7 @@ from pose_store import (
     normalize_review_entry,
     delete_record,
     enrich_events_with_review,
+    event_review_write_lock,
     event_signature,
     iter_active_records,
     load_event_review,
@@ -721,6 +722,15 @@ def patch_record_event_review(record_id: str, body: dict[str, Any] = Body(...)) 
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体须为 JSON 对象")
 
+    with event_review_write_lock(record_id):
+        return _patch_record_event_review_locked(record_id, locator, body)
+
+
+def _patch_record_event_review_locked(
+    record_id: str,
+    locator: Any,
+    body: dict[str, Any],
+) -> JSONResponse:
     review = load_event_review(locator)
     verified: list[dict[str, Any]] = list(review.get("verified_true") or [])
     by_sig = {
@@ -814,6 +824,37 @@ def patch_record_event_review(record_id: str, body: dict[str, Any] = Body(...)) 
         raise HTTPException(500, str(exc)) from exc
 
     if not all_events:
+        event_total_empty = 0
+        if body.get("event_total") is not None:
+            try:
+                event_total_empty = max(0, int(body.get("event_total")))
+            except (TypeError, ValueError):
+                event_total_empty = 0
+        # 时间轴无事件时仍保留已有标真，避免并发 PATCH 把 verified_true 清空
+        if verified:
+            try:
+                path = save_event_review(
+                    locator,
+                    verified,
+                    status="in_progress",
+                    event_total=event_total_empty or len(verified),
+                )
+            except OSError as exc:
+                raise HTTPException(500, f"保存复核失败: {exc}") from exc
+            saved = load_event_review(locator)
+            review_status = resolve_event_review_status(saved, event_count=0)
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "record_id": record_id,
+                    "path": str(path),
+                    "verified_true_count": len(saved.get("verified_true") or []),
+                    "event_review_status": review_status,
+                    "event_review_label": event_review_status_label(review_status),
+                    "event_review": saved,
+                    "events": [],
+                }
+            )
         try:
             path = save_event_review(
                 locator,

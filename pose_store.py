@@ -4,10 +4,28 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+_review_write_locks: dict[str, threading.Lock] = {}
+_review_write_locks_mu = threading.Lock()
+
+
+@contextmanager
+def event_review_write_lock(record_id: str):
+    """同一 record 的 event_review 写入串行化，避免并发 PATCH toggle 互相覆盖。"""
+    rid = str(record_id or "").strip()
+    with _review_write_locks_mu:
+        lock = _review_write_locks.setdefault(rid, threading.Lock())
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 from model_assets import COCO17_KEYPOINT_NAMES
 
